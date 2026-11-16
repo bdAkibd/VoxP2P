@@ -127,38 +127,42 @@ impl AudioManager {
         let local_node_id = self.local_node_id.clone();
         let levels_cb = self.levels_callback.clone();
 
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
-                while !levels_cancel.load(Ordering::Acquire) {
-                    interval.tick().await;
+        let task_fn = async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+            while !levels_cancel.load(Ordering::Acquire) {
+                interval.tick().await;
 
-                    let mut levels_map = HashMap::new();
+                let mut levels_map = HashMap::new();
 
-                    // 1. Local microphone volume level
-                    let local_id = {
-                        let id = local_node_id.read().unwrap();
-                        id.clone()
-                    };
-                    let mic_level = if let Ok(cap) = capture.lock() {
-                        cap.get_mic_level()
-                    } else {
-                        0.0
-                    };
-                    levels_map.insert(local_id, mic_level);
+                // 1. Local microphone volume level
+                let local_id = {
+                    let id = local_node_id.read().unwrap();
+                    id.clone()
+                };
+                let mic_level = if let Ok(cap) = capture.lock() {
+                    cap.get_mic_level()
+                } else {
+                    0.0
+                };
+                levels_map.insert(local_id, mic_level);
 
-                    // 2. Active peer volume levels from mixer
-                    let peer_levels = mixer.get_peer_levels();
-                    for (node_id, level) in peer_levels {
-                        levels_map.insert(node_id, level);
-                    }
-
-                    // 3. Emit via callback closure if provided
-                    if let Some(ref cb) = levels_cb {
-                        cb(&levels_map);
-                    }
+                // 2. Active peer volume levels from mixer
+                let peer_levels = mixer.get_peer_levels();
+                for (node_id, level) in peer_levels {
+                    levels_map.insert(node_id, level);
                 }
-            });
+
+                // 3. Emit via callback closure if provided
+                if let Some(ref cb) = levels_cb {
+                    cb(&levels_map);
+                }
+            }
+        };
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(task_fn);
+        } else {
+            tauri::async_runtime::spawn(task_fn);
         }
     }
 

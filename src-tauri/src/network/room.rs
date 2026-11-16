@@ -872,13 +872,23 @@ impl RoomManager {
 
         // Asynchronously load real identity from node_manager
         let mgr_clone = mgr.clone();
-        tokio::spawn(async move {
-            let key = node_manager.get_secret_key().await;
-            let nid = node_manager.get_node_id().await;
-            let mut w = mgr_clone.inner.write().await;
-            w.secret_key = key;
-            w.local_node_id = nid;
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let key = node_manager.get_secret_key().await;
+                let nid = node_manager.get_node_id().await;
+                let mut w = mgr_clone.inner.write().await;
+                w.secret_key = key;
+                w.local_node_id = nid;
+            });
+        } else {
+            tauri::async_runtime::spawn(async move {
+                let key = node_manager.get_secret_key().await;
+                let nid = node_manager.get_node_id().await;
+                let mut w = mgr_clone.inner.write().await;
+                w.secret_key = key;
+                w.local_node_id = nid;
+            });
+        }
 
         mgr
     }

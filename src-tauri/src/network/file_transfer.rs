@@ -449,24 +449,28 @@ impl FileTransferManager {
         let cancel = self.offline_watcher_cancel.clone();
         let this = self.clone();
 
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(3500));
-                while !cancel.load(Ordering::Acquire) {
-                    interval.tick().await;
+        let task_fn = async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(3500));
+            while !cancel.load(Ordering::Acquire) {
+                interval.tick().await;
 
-                    if let Ok(undelivered) = this.db.get_all_undelivered_messages() {
-                        let mut recipient_set = std::collections::HashSet::new();
-                        for msg in undelivered {
-                            recipient_set.insert(msg.chat_id);
-                        }
+                if let Ok(undelivered) = this.db.get_all_undelivered_messages() {
+                    let mut recipient_set = std::collections::HashSet::new();
+                    for msg in undelivered {
+                        recipient_set.insert(msg.chat_id);
+                    }
 
-                        for recipient in recipient_set {
-                            let _ = this.flush_undelivered_messages(&recipient).await;
-                        }
+                    for recipient in recipient_set {
+                        let _ = this.flush_undelivered_messages(&recipient).await;
                     }
                 }
-            });
+            }
+        };
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(task_fn);
+        } else {
+            tauri::async_runtime::spawn(task_fn);
         }
     }
 
