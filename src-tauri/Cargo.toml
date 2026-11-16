@@ -1,0 +1,46 @@
+[package]
+name = "voxp2p"
+version = "0.1.0"
+description = "100% serverless P2P voice & text chat application"
+authors = ["VoxP2P Contributors"]
+edition = "2024"
+
+[lib]
+name = "voxp2p_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+# Networking (100% Serverless)
+iroh = "1.4.1"
+iroh-gossip = "0.102.0"
+iroh-blobs = "0.105.0"
+socket2 = { version = "0.6", features = ["all"] }
+mdns-sd = "0.21"
+
+# Audio Pipeline
+cpal = "0.18"
+nnnoiseless = "0.5"
+audiopus = "0.3.0-rc.0"
+ringbuf = "0.6"
+
+# Storage
+rusqlite = { version = "0.43", features = ["bundled"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
