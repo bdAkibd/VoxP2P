@@ -288,3 +288,66 @@ pub fn get_messages(
     db.get_messages_for_chat(&chat_id, limit.unwrap_or(50))
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn set_rnnoise(
+    enabled: bool,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    audio_manager.set_rnnoise(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_bypass_vpn(
+    bypass: bool,
+    node_manager: State<'_, NodeManager>,
+) -> Result<(), String> {
+    node_manager.set_bypass_vpn(bypass).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_theme(
+    theme_name: String,
+    theme_json: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    let themes_file = app_data_dir.join("themes.json");
+
+    let mut map: std::collections::HashMap<String, serde_json::Value> = if themes_file.exists() {
+        let data = std::fs::read_to_string(&themes_file).unwrap_or_else(|_| "{}".to_string());
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let val: serde_json::Value =
+        serde_json::from_str(&theme_json).map_err(|e| format!("Invalid theme JSON: {e}"))?;
+    map.insert(theme_name, val);
+
+    let serialized = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
+    std::fs::write(&themes_file, serialized).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_saved_themes(app_handle: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let themes_file = app_data_dir.join("themes.json");
+    if themes_file.exists() {
+        std::fs::read_to_string(&themes_file).map_err(|e| e.to_string())
+    } else {
+        Ok("{}".to_string())
+    }
+}

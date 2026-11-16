@@ -251,6 +251,12 @@ impl AudioManager {
         }
     }
 
+    pub fn set_rnnoise(&self, enabled: bool) {
+        if let Ok(cap) = self.capture.lock() {
+            cap.set_noise_suppression(enabled);
+        }
+    }
+
     pub fn list_devices(&self) -> AudioDevicesResponse {
         let input_devices = list_input_devices();
         let output_devices = list_output_devices();

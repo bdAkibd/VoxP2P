@@ -15,15 +15,18 @@ use ipc::commands::{
     get_my_profile,
     get_node_status,
     get_room_state,
+    get_saved_themes,
     get_undelivered_messages,
     join_room,
     leave_room,
     list_audio_devices,
     list_audio_input_devices,
     list_audio_output_devices,
+    save_theme,
     send_direct_message,
     send_message,
     send_room_message,
+    set_bypass_vpn,
     set_deafen,
     set_input_device,
     set_master_volume,
@@ -31,6 +34,7 @@ use ipc::commands::{
     set_mute,
     set_output_device,
     set_peer_volume,
+    set_rnnoise,
     transfer_host,
     update_profile,
 };
@@ -167,7 +171,11 @@ pub fn run() {
             send_room_message,
             send_direct_message,
             send_message,
-            get_messages
+            get_messages,
+            set_rnnoise,
+            set_bypass_vpn,
+            save_theme,
+            get_saved_themes
         ])
 
         .run(tauri::generate_context!())

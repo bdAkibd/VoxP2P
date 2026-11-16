@@ -169,6 +169,11 @@ impl AudioCapturePipeline {
         self.is_running.load(Ordering::Acquire)
     }
 
+    pub fn set_noise_suppression(&self, enabled: bool) {
+        let mut conf = self.config.write().unwrap();
+        conf.enable_noise_suppression = enabled;
+    }
+
     /// Pure DSP frame processing: applies gain, RNNoise denoise, VAD threshold, and Opus encoding.
     /// Returns `Some((seq, opus_bytes))` if voice was detected and encoded.
     pub fn process_frame_dsp(
@@ -176,9 +181,9 @@ impl AudioCapturePipeline {
         raw_pcm: &[f32; OPUS_FRAME_SAMPLES],
     ) -> Result<Option<(u64, Vec<u8>)>, String> {
         let gain = self.get_gain();
-        let vad_threshold = {
+        let (vad_threshold, enable_ns) = {
             let conf = self.config.read().unwrap();
-            conf.voice_activation_threshold
+            (conf.voice_activation_threshold, conf.enable_noise_suppression)
         };
         let is_muted = self.is_muted();
 
@@ -188,9 +193,8 @@ impl AudioCapturePipeline {
             gained_pcm[i] = sample * gain;
         }
 
-        // 2. Process through RNNoise (two 480-sample chunks)
-        let mut denoised_frame = [0.0f32; OPUS_FRAME_SAMPLES];
-        let vad_prob = {
+        // 2. Process through RNNoise if enabled (two 480-sample chunks)
+        let (denoised_frame, vad_prob) = if enable_ns {
             let mut denoiser = self
                 .denoise_state
                 .lock()
@@ -208,10 +212,13 @@ impl AudioCapturePipeline {
             let mut chunk2_out = [0.0f32; RNNOISE_CHUNK_SAMPLES];
             let vad2 = denoiser.process_frame(&mut chunk2_out, &chunk2_in);
 
-            denoised_frame[..RNNOISE_CHUNK_SAMPLES].copy_from_slice(&chunk1_out);
-            denoised_frame[RNNOISE_CHUNK_SAMPLES..].copy_from_slice(&chunk2_out);
+            let mut out = [0.0f32; OPUS_FRAME_SAMPLES];
+            out[..RNNOISE_CHUNK_SAMPLES].copy_from_slice(&chunk1_out);
+            out[RNNOISE_CHUNK_SAMPLES..].copy_from_slice(&chunk2_out);
 
-            vad1.max(vad2)
+            (out, vad1.max(vad2))
+        } else {
+            (gained_pcm, 1.0)
         };
 
 
@@ -442,9 +449,9 @@ struct DspHandles {
 
 impl DspHandles {
     fn process_frame(&self, raw_pcm: &[f32; OPUS_FRAME_SAMPLES]) -> Result<(), String> {
-        let (gain, vad_threshold) = {
+        let (gain, vad_threshold, enable_ns) = {
             let conf = self.config.read().unwrap();
-            (conf.input_gain, conf.voice_activation_threshold)
+            (conf.input_gain, conf.voice_activation_threshold, conf.enable_noise_suppression)
         };
         let is_muted = self.is_muted.load(Ordering::Acquire);
 
@@ -453,8 +460,7 @@ impl DspHandles {
             gained_pcm[i] = sample * gain;
         }
 
-        let mut denoised_frame = [0.0f32; OPUS_FRAME_SAMPLES];
-        let vad_prob = {
+        let (denoised_frame, vad_prob) = if enable_ns {
             let mut denoiser = match self.denoise_state.lock() {
                 Ok(d) => d,
                 Err(_) => return Ok(()),
@@ -470,10 +476,13 @@ impl DspHandles {
             let mut chunk2_out = [0.0f32; RNNOISE_CHUNK_SAMPLES];
             let vad2 = denoiser.process_frame(&mut chunk2_out, &chunk2_in);
 
-            denoised_frame[..RNNOISE_CHUNK_SAMPLES].copy_from_slice(&chunk1_out);
-            denoised_frame[RNNOISE_CHUNK_SAMPLES..].copy_from_slice(&chunk2_out);
+            let mut out = [0.0f32; OPUS_FRAME_SAMPLES];
+            out[..RNNOISE_CHUNK_SAMPLES].copy_from_slice(&chunk1_out);
+            out[RNNOISE_CHUNK_SAMPLES..].copy_from_slice(&chunk2_out);
 
-            vad1.max(vad2)
+            (out, vad1.max(vad2))
+        } else {
+            (gained_pcm, 1.0)
         };
 
 

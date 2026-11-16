@@ -1,156 +1,216 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
+  import type { UserProfile, Contact, RoomState, Message } from "$lib/types";
+  import { initTheme, type ThemeConfig } from "$lib/theme";
+  import { api } from "$lib/api";
+  import Sidebar from "$lib/components/Sidebar.svelte";
+  import CallView from "$lib/components/CallView.svelte";
+  import ChatView from "$lib/components/ChatView.svelte";
+  import SettingsModal from "$lib/components/SettingsModal.svelte";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let currentTheme = $state<ThemeConfig>(initTheme());
+  let profile = $state<UserProfile | null>(null);
+  let contacts = $state<Contact[]>([]);
+  let roomState = $state<RoomState | null>(null);
+  let activeChatId = $state<string>("lobby");
+  let messages = $state<Message[]>([]);
+  let audioLevels = $state<Record<string, number>>({});
+  let isMuted = $state<boolean>(false);
+  let isDeafened = $state<boolean>(false);
+  let showSettingsModal = $state<boolean>(false);
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  onMount(() => {
+    // 1. Initialize Theme
+    currentTheme = initTheme();
+
+    // 2. Fetch Initial User Profile
+    api.getMyProfile().then((p) => {
+      profile = p;
+    }).catch(console.error);
+
+    // 3. Fetch Contacts
+    loadContacts();
+
+    // 4. Fetch Room State
+    api.getRoomState().then((r) => {
+      roomState = r;
+      if (r) {
+        activeChatId = r.room_id;
+      }
+    }).catch(console.error);
+
+    // 5. Register Event Listeners
+    let unlistenLevels: (() => void) | undefined;
+    let unlistenHost: (() => void) | undefined;
+    let unlistenChat: (() => void) | undefined;
+
+    api.onAudioLevels((levels) => {
+      audioLevels = levels;
+    }).then((u) => (unlistenLevels = u));
+
+    api.onHostChanged((payload) => {
+      if (roomState && roomState.room_id === payload.room_id) {
+        roomState.host_node_id = payload.new_host_id;
+        for (const peer of roomState.peers) {
+          peer.is_host = peer.node_id === payload.new_host_id;
+        }
+      }
+    }).then((u) => (unlistenHost = u));
+
+    api.onChatMessage((msg) => {
+      if (msg.chat_id === activeChatId || msg.sender_id === activeChatId) {
+        messages = [...messages, msg];
+      }
+    }).then((u) => (unlistenChat = u));
+
+    return () => {
+      unlistenLevels?.();
+      unlistenHost?.();
+      unlistenChat?.();
+    };
+  });
+
+  $effect(() => {
+    // Whenever activeChatId changes, fetch latest messages
+    if (activeChatId) {
+      api.getMessages(activeChatId, 50).then((res) => {
+        messages = res;
+      }).catch(console.error);
+    }
+  });
+
+  async function loadContacts() {
+    try {
+      contacts = await api.getContacts();
+    } catch (err) {
+      console.error("Failed to load contacts:", err);
+    }
+  }
+
+  async function handleJoinRoom(roomId: string) {
+    try {
+      const state = await api.joinRoom(roomId);
+      roomState = state;
+      activeChatId = roomId;
+    } catch (err) {
+      console.error("Failed to join room:", err);
+    }
+  }
+
+  async function handleLeaveRoom() {
+    try {
+      await api.leaveRoom();
+      roomState = null;
+    } catch (err) {
+      console.error("Failed to leave room:", err);
+    }
+  }
+
+  async function handleAddContact(nodeId: string) {
+    try {
+      await api.addContact(nodeId);
+      await loadContacts();
+    } catch (err) {
+      console.error("Failed to add contact:", err);
+    }
+  }
+
+  async function handleSendMessage(content: string) {
+    try {
+      const sent = await api.sendMessage(activeChatId, content);
+      messages = [...messages, sent];
+    } catch (err) {
+      console.error("Failed to send message:", err);
+    }
+  }
+
+  function handleThemeApplied(theme: ThemeConfig) {
+    currentTheme = theme;
   }
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<main class="app-layout">
+  <!-- Left: Sidebar -->
+  <Sidebar
+    {profile}
+    {contacts}
+    {roomState}
+    bind:activeChatId
+    bind:isMuted
+    bind:isDeafened
+    onOpenSettings={() => (showSettingsModal = true)}
+    onJoinRoom={handleJoinRoom}
+    onLeaveRoom={handleLeaveRoom}
+    onAddContact={handleAddContact}
+  />
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
-  </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
+  <!-- Right: Voice Call Top Panel + Chat Bottom Panel -->
+  <section class="main-content-panel">
+    <CallView {roomState} {profile} {audioLevels} />
+    <ChatView
+      {activeChatId}
+      {profile}
+      {messages}
+      onSendMessage={handleSendMessage}
+      onThemeApplied={handleThemeApplied}
+    />
+  </section>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
+  <!-- Settings Modal (Voice, Network, Theme Studio) -->
+  {#if showSettingsModal}
+    <SettingsModal
+      bind:currentTheme
+      onClose={() => (showSettingsModal = false)}
+    />
+  {/if}
 </main>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  :global(:root) {
+    --bg-primary: #0f1115;
+    --bg-secondary: #161920;
+    --bg-tertiary: #1f232d;
+    --surface-card: #252a36;
+    --border-color: #2d3443;
+    --border-width: 1px;
+    --border-radius: 8px;
+    --text-primary: #f1f3f7;
+    --text-muted: #8b94a5;
+    --accent-primary: #4f46e5;
+    --accent-hover: #6366f1;
+    --voice-speaking-ring: #10b981;
+    --danger-color: #ef4444;
+    --online-status-color: #10b981;
   }
 
-  a:hover {
-    color: #24c8db;
+  :global(body), :global(html) {
+    margin: 0;
+    padding: 0;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  :global(*), :global(*::before), :global(*::after) {
+    box-sizing: border-box;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  .app-layout {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .main-content-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
 </style>
