@@ -165,6 +165,26 @@ impl NodeManager {
         state.status.clone()
     }
 
+    pub async fn get_secret_key(&self) -> SecretKey {
+        let state = self.state.read().await;
+        state.secret_key.clone()
+    }
+
+    pub async fn get_node_id(&self) -> String {
+        let state = self.state.read().await;
+        state.profile.node_id.clone()
+    }
+
+    pub async fn get_endpoint(&self) -> Option<Endpoint> {
+        let state = self.state.read().await;
+        state.endpoint.clone()
+    }
+
+    pub async fn get_gossip(&self) -> Option<Gossip> {
+        let state = self.state.read().await;
+        state.gossip.clone()
+    }
+
     pub async fn get_my_profile(&self) -> UserProfile {
         let state = self.state.read().await;
         state.profile.clone().into()

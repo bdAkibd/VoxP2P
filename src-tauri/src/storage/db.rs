@@ -129,6 +129,34 @@ impl Database {
         Ok(())
     }
 
+    /// Handles profile handshake from a peer: auto-updates or creates a contact entry in SQLite.
+    /// Preserves user custom volume setting if the contact already exists.
+    pub fn handle_profile_handshake(
+        &self,
+        peer_node_id: &str,
+        nickname: &str,
+        avatar_hash: Option<&str>,
+    ) -> Result<Contact> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let existing = self.get_contact(peer_node_id)?;
+        let custom_volume = existing.map(|c| c.custom_volume).unwrap_or(1.0);
+
+        let contact = Contact {
+            node_id: peer_node_id.to_string(),
+            nickname: nickname.to_string(),
+            avatar_path: avatar_hash.map(|s| s.to_string()),
+            custom_volume,
+            last_seen: now,
+        };
+
+        self.insert_or_update_contact(&contact)?;
+        Ok(contact)
+    }
+
     pub fn get_contacts(&self) -> Result<Vec<Contact>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -380,5 +408,27 @@ mod tests {
         let remaining_undelivered = db.get_undelivered_messages("peer_target").unwrap();
         assert_eq!(remaining_undelivered.len(), 1);
         assert_eq!(remaining_undelivered[0].id, "msg_2");
+    }
+
+    #[test]
+    fn test_handle_profile_handshake() {
+        let db = Database::new_in_memory().expect("db init failed");
+        let contact = db
+            .handle_profile_handshake("peer_handshake_1", "Charlie", Some("hash_avatar_1"))
+            .unwrap();
+        assert_eq!(contact.nickname, "Charlie");
+        assert_eq!(contact.avatar_path, Some("hash_avatar_1".to_string()));
+        assert_eq!(contact.custom_volume, 1.0);
+
+        // Update custom volume
+        db.update_contact_volume("peer_handshake_1", 1.8).unwrap();
+
+        // Subsequent handshake from Charlie with updated avatar, should preserve custom volume 1.8
+        let updated = db
+            .handle_profile_handshake("peer_handshake_1", "Charlie_Renamed", Some("hash_avatar_2"))
+            .unwrap();
+        assert_eq!(updated.nickname, "Charlie_Renamed");
+        assert_eq!(updated.avatar_path, Some("hash_avatar_2".to_string()));
+        assert_eq!(updated.custom_volume, 1.8);
     }
 }

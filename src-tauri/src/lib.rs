@@ -9,14 +9,19 @@ use ipc::commands::{
     get_contacts,
     get_my_profile,
     get_node_status,
+    get_room_state,
     get_undelivered_messages,
+    join_room,
+    leave_room,
     list_audio_input_devices,
     list_audio_output_devices,
     set_master_volume,
     set_microphone_gain,
+    transfer_host,
     update_profile,
 };
 use network::node::NodeManager;
+use network::room::RoomManager;
 use storage::db::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,6 +39,11 @@ pub fn run() {
             let db = Database::new(db_path).expect("failed to initialize sqlite database");
             let node_manager =
                 NodeManager::new(db.clone()).expect("failed to initialize node manager");
+            let room_manager = RoomManager::new(
+                node_manager.clone(),
+                db.clone(),
+                Some(app.handle().clone()),
+            );
 
             let nm_clone = node_manager.clone();
             tauri::async_runtime::spawn(async move {
@@ -44,6 +54,7 @@ pub fn run() {
 
             app.manage(db);
             app.manage(node_manager);
+            app.manage(room_manager);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -56,7 +67,11 @@ pub fn run() {
             list_audio_input_devices,
             list_audio_output_devices,
             set_microphone_gain,
-            set_master_volume
+            set_master_volume,
+            transfer_host,
+            get_room_state,
+            join_room,
+            leave_room
         ])
         .run(tauri::generate_context!())
         .expect("error while running voxp2p application");
