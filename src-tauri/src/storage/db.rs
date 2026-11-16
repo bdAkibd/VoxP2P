@@ -285,6 +285,35 @@ impl Database {
         Ok(())
     }
 
+    /// Fetches all undelivered messages across all chats/contacts.
+    pub fn get_all_undelivered_messages(&self) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
+             FROM messages
+             WHERE delivered = 0
+             ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                chat_id: row.get(1)?,
+                sender_id: row.get(2)?,
+                content: row.get(3)?,
+                attachment_hash: row.get(4)?,
+                attachment_name: row.get(5)?,
+                timestamp: row.get(6)?,
+                delivered: row.get(7)?,
+            })
+        })?;
+
+        let mut messages = Vec::new();
+        for msg in rows {
+            messages.push(msg?);
+        }
+        Ok(messages)
+    }
+
     /// Fetches all undelivered messages queued for a given contact / node_id.
     pub fn get_undelivered_messages(&self, node_id: &str) -> Result<Vec<Message>> {
         let conn = self.conn.lock().unwrap();

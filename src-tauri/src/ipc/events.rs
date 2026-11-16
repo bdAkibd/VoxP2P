@@ -8,7 +8,9 @@ pub const EVENT_ROOM_STATE: &str = "voxp2p://room-state";
 
 pub const EVENT_CHAT_MESSAGE: &str = "voxp2p://chat-message";
 pub const EVENT_FILE_TRANSFER: &str = "voxp2p://file-transfer";
+pub const EVENT_TRANSFER_PROGRESS: &str = "transfer://progress";
 pub const EVENT_HOST_CHANGED: &str = "room://host-changed";
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeLevelsPayload {
@@ -35,6 +37,16 @@ pub struct FileTransferPayload {
     pub transferred_bytes: u64,
     pub is_complete: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferProgressPayload {
+    pub hash: String,
+    pub percent: f32,
+    pub bytes_downloaded: u64,
+    pub total_bytes: u64,
+    pub is_complete: bool,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostChangedPayload {

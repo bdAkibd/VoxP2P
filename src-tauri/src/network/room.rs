@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
-use tokio::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use iroh::{PublicKey, SecretKey, Signature};
@@ -10,7 +10,8 @@ use iroh::{PublicKey, SecretKey, Signature};
 use crate::ipc::events::{HostChangedPayload, EVENT_HOST_CHANGED};
 use crate::network::node::NodeManager;
 use crate::storage::db::Database;
-use crate::storage::models::Contact;
+use crate::storage::models::{Contact, Message};
+
 
 // ============================================================================
 // 1. Gossip Control Messages & Handshake
@@ -88,7 +89,16 @@ pub enum RoomGossipMessage {
         nickname: String,
         avatar_hash: Option<String>,
     },
+    ChatMessage {
+        message_id: String,
+        sender_id: String,
+        content: String,
+        attachment_hash: Option<String>,
+        attachment_name: Option<String>,
+        timestamp: i64,
+    },
 }
+
 
 impl RoomGossipMessage {
     pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
@@ -257,6 +267,8 @@ impl RoomState {
 // ============================================================================
 
 pub type HostChangedCallback = Arc<dyn Fn(&HostChangedPayload) + Send + Sync>;
+pub type ChatMessageCallback = Arc<dyn Fn(&Message) + Send + Sync>;
+pub type AvatarHandshakeCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 pub struct RoomSession {
     pub room_id: String,
@@ -270,6 +282,8 @@ pub struct RoomSession {
     pub relay_targets: Arc<RwLock<HashSet<String>>>,
     pub db: Database,
     pub host_changed_cb: Option<HostChangedCallback>,
+    pub chat_message_cb: Option<ChatMessageCallback>,
+    pub avatar_cb: Arc<RwLock<Option<AvatarHandshakeCallback>>>,
     cancel_tx: broadcast::Sender<()>,
     heartbeat_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -282,7 +296,9 @@ impl RoomSession {
         initial_host_id: String,
         db: Database,
         host_changed_cb: Option<HostChangedCallback>,
+        chat_message_cb: Option<ChatMessageCallback>,
     ) -> Arc<Self> {
+
         let (broadcast_tx, _) = broadcast::channel(256);
         let (forwarded_datagram_tx, _) = broadcast::channel(1024);
         let (cancel_tx, _) = broadcast::channel(1);
@@ -305,6 +321,8 @@ impl RoomSession {
             relay_targets,
             db,
             host_changed_cb: host_changed_cb.clone(),
+            chat_message_cb,
+            avatar_cb: Arc::new(RwLock::new(None)),
             cancel_tx: cancel_tx.clone(),
             heartbeat_task: Mutex::new(None),
         });
@@ -537,6 +555,13 @@ impl RoomSession {
                 self.db
                     .handle_profile_handshake(&node_id, &nickname, avatar_hash.as_deref())
                     .map_err(|e| e.to_string())?;
+
+                if let Some(ref hash) = avatar_hash {
+                    let cb_opt = self.avatar_cb.read().await.clone();
+                    if let Some(cb) = cb_opt {
+                        cb(&node_id, hash);
+                    }
+                }
             }
             RoomGossipMessage::Heartbeat {
                 host_id,
@@ -575,9 +600,80 @@ impl RoomSession {
                 nickname: _,
                 avatar_hash: _,
             } => {}
+            RoomGossipMessage::ChatMessage {
+                message_id,
+                sender_id,
+                content,
+                attachment_hash,
+                attachment_name,
+                timestamp,
+            } => {
+                if sender_id == self.local_node_id {
+                    return Ok(());
+                }
+                let msg = Message {
+                    id: message_id,
+                    chat_id: self.room_id.clone(),
+                    sender_id,
+                    content,
+                    attachment_hash,
+                    attachment_name,
+                    timestamp,
+                    delivered: 1,
+                };
+                self.db.insert_message(&msg).map_err(|e| e.to_string())?;
+                if let Some(ref cb) = self.chat_message_cb {
+                    cb(&msg);
+                }
+            }
         }
         Ok(())
     }
+
+    /// Sends a room chat message, saves it locally, and broadcasts it over the gossip channel.
+    pub async fn send_room_chat(
+        &self,
+        content: String,
+        attachment_hash: Option<String>,
+        attachment_name: Option<String>,
+    ) -> Result<Message, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let id = format!("msg_{}_{}", self.local_node_id, now);
+
+        let msg = Message {
+            id: id.clone(),
+            chat_id: self.room_id.clone(),
+            sender_id: self.local_node_id.clone(),
+            content: content.clone(),
+            attachment_hash: attachment_hash.clone(),
+            attachment_name: attachment_name.clone(),
+            timestamp: now,
+            delivered: 1,
+        };
+
+        self.db.insert_message(&msg).map_err(|e| e.to_string())?;
+
+        let gossip_msg = RoomGossipMessage::ChatMessage {
+            message_id: id,
+            sender_id: self.local_node_id.clone(),
+            content,
+            attachment_hash,
+            attachment_name,
+            timestamp: now,
+        };
+
+        self.broadcast_tx.send(gossip_msg).ok();
+
+        if let Some(ref cb) = self.chat_message_cb {
+            cb(&msg);
+        }
+
+        Ok(msg)
+    }
+
 
     /// Handles an incoming QUIC datagram:
     /// - If it is a `RelayEnvelope`:
@@ -714,6 +810,10 @@ impl RoomSession {
             .map_err(|e| e.to_string())
     }
 
+    pub async fn set_avatar_cb(&self, cb: AvatarHandshakeCallback) {
+        *self.avatar_cb.write().await = Some(cb);
+    }
+
     /// Cleanly closes the room session and terminates background tasks.
     pub async fn close(&self) {
         let _ = self.cancel_tx.send(());
@@ -745,6 +845,7 @@ struct RoomManagerInner {
     pub current_room: Option<Arc<RoomSession>>,
     pub local_node_id: String,
     pub secret_key: SecretKey,
+    pub avatar_cb: Option<AvatarHandshakeCallback>,
 }
 
 impl RoomManager {
@@ -760,6 +861,7 @@ impl RoomManager {
             current_room: None,
             local_node_id,
             secret_key,
+            avatar_cb: None,
         }));
 
         let mgr = Self {
@@ -791,6 +893,7 @@ impl RoomManager {
             current_room: None,
             local_node_id,
             secret_key,
+            avatar_cb: None,
         }));
 
         Self {
@@ -798,6 +901,11 @@ impl RoomManager {
             db,
             app_handle,
         }
+    }
+
+    pub async fn set_avatar_cb(&self, cb: AvatarHandshakeCallback) {
+        let mut inner = self.inner.write().await;
+        inner.avatar_cb = Some(cb);
     }
 
     pub async fn create_or_join_room(
@@ -826,6 +934,20 @@ impl RoomManager {
             cb
         });
 
+        let chat_message_cb = self.app_handle.as_ref().map(|app| {
+            let app_handle = app.clone();
+            let cb: ChatMessageCallback = Arc::new(move |msg: &Message| {
+                use tauri::Emitter;
+                let _ = app_handle.emit(
+                    crate::ipc::events::EVENT_CHAT_MESSAGE,
+                    crate::ipc::events::ChatMessagePayload {
+                        message: msg.clone(),
+                    },
+                );
+            });
+            cb
+        });
+
         let session = RoomSession::new(
             room_id.to_string(),
             inner.local_node_id.clone(),
@@ -833,7 +955,12 @@ impl RoomManager {
             host,
             self.db.clone(),
             host_changed_cb,
+            chat_message_cb,
         );
+
+        if let Some(ref cb) = inner.avatar_cb {
+            session.set_avatar_cb(cb.clone()).await;
+        }
 
         inner.current_room = Some(session.clone());
         session
@@ -874,6 +1001,22 @@ impl RoomManager {
         if let Some(room) = inner.current_room.take() {
             room.close().await;
         }
+    }
+
+    pub async fn send_room_chat(
+        &self,
+        content: String,
+        attachment_hash: Option<String>,
+        attachment_name: Option<String>,
+    ) -> Result<Message, String> {
+        let room = {
+            let inner = self.inner.read().await;
+            inner
+                .current_room
+                .clone()
+                .ok_or_else(|| "No active room session".to_string())?
+        };
+        room.send_room_chat(content, attachment_hash, attachment_name).await
     }
 
     /// Broadcasts an Opus audio frame across all peers in the active room.
@@ -991,7 +1134,9 @@ mod tests {
                 host_id.clone(),
                 db,
                 None,
+                None,
             );
+
 
             // Add target to peers
             session.state.write().await.add_or_update_peer(PeerInfo {
@@ -1032,7 +1177,9 @@ mod tests {
                 other_host_id, // someone else is host
                 db,
                 None,
+                None,
             );
+
 
             session.state.write().await.add_or_update_peer(PeerInfo {
                 node_id: target_id.clone(),
@@ -1072,6 +1219,7 @@ mod tests {
                 host_id.clone(),
                 db.clone(),
                 None,
+                None,
             );
 
             // 2. Peer A session
@@ -1083,7 +1231,9 @@ mod tests {
                 host_id.clone(),
                 db.clone(),
                 None,
+                None,
             );
+
 
             // Peer A cannot reach Peer B directly (simulate fallback)
             peer_a_session.set_peer_relay_fallback(&peer_b_id, true).await;
@@ -1140,7 +1290,9 @@ mod tests {
                 node_id.clone(),
                 db,
                 None,
+                None,
             );
+
 
             // Simulate a connect call that takes longer than 3 seconds
             session
@@ -1180,7 +1332,9 @@ mod tests {
             node_id.clone(),
             db.clone(),
             None,
+            None,
         );
+
 
         let handshake = ProfileHandshake {
             nickname: "Alice_Handshake".to_string(),
@@ -1235,7 +1389,9 @@ mod tests {
                 host_id.clone(),
                 db,
                 Some(cb),
+                None,
             );
+
 
             // Add dead host and peer 1
             session.state.write().await.add_or_update_peer(PeerInfo {
@@ -1292,6 +1448,7 @@ mod tests {
                 host_id.clone(),
                 db,
                 None,
+                None,
             );
 
             let mut rx = session.broadcast_tx.subscribe();
@@ -1314,4 +1471,54 @@ mod tests {
             session.close().await;
         });
     }
+
+    #[test]
+    fn test_room_chat_messaging() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let db = Database::new_in_memory().unwrap();
+            let sk = SecretKey::generate();
+            let node_id = sk.public().to_string();
+
+            let session = RoomSession::new(
+                "room_chat_test".to_string(),
+                node_id.clone(),
+                sk,
+                node_id.clone(),
+                db.clone(),
+                None,
+                None,
+            );
+
+            let mut rx = session.broadcast_tx.subscribe();
+
+            let msg = session
+                .send_room_chat("Hello room!".to_string(), None, None)
+                .await
+                .unwrap();
+
+            assert_eq!(msg.content, "Hello room!");
+            assert_eq!(msg.chat_id, "room_chat_test");
+
+            // Verify stored in DB
+            let msgs = db.get_messages_for_chat("room_chat_test", 10).unwrap();
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0].content, "Hello room!");
+
+            // Verify broadcast over gossip
+            let gossip_msg = rx.recv().await.unwrap();
+            match gossip_msg {
+                RoomGossipMessage::ChatMessage { content, .. } => {
+                    assert_eq!(content, "Hello room!");
+                }
+                _ => panic!("Expected ChatMessage variant"),
+            }
+
+            session.close().await;
+        });
+    }
 }
+

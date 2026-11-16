@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use tauri::State;
 use crate::audio::{AudioDeviceInfo, AudioDevicesResponse, AudioManager};
+use crate::network::file_transfer::{AttachFileResponse, FileTransferManager};
 use crate::network::node::{NodeManager, NodeStatus, UserProfile};
-
-use crate::network::room::{RoomManager, RoomState};
+use crate::network::room::{RoomGossipMessage, RoomManager, RoomState};
 use crate::storage::db::Database;
 use crate::storage::models::{Contact, Message};
 
@@ -181,4 +181,110 @@ pub async fn join_room(
 pub async fn leave_room(room_manager: State<'_, RoomManager>) -> Result<(), String> {
     room_manager.leave_room().await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn attach_file(
+    file_path: String,
+    chat_id: Option<String>,
+    text: Option<String>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+    room_manager: State<'_, RoomManager>,
+) -> Result<AttachFileResponse, String> {
+    let resp = ft_manager.attach_file(&file_path, chat_id.clone(), text).await?;
+
+    if let Some(ref target) = chat_id {
+        if let Some(room) = room_manager.get_current_room().await {
+            if &room.room_id == target {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                let gossip_msg = RoomGossipMessage::ChatMessage {
+                    message_id: resp.id.clone(),
+                    sender_id: room.local_node_id.clone(),
+                    content: resp.text.clone(),
+                    attachment_hash: Some(resp.attachment_hash.clone()),
+                    attachment_name: Some(resp.attachment_name.clone()),
+                    timestamp: now,
+                };
+                let _ = room.broadcast_tx.send(gossip_msg);
+            }
+        }
+    }
+
+    Ok(resp)
+}
+
+#[tauri::command]
+pub async fn download_attachment(
+    node_id: String,
+    blob_hash: String,
+    save_path: String,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<(), String> {
+    ft_manager
+        .download_attachment(&node_id, &blob_hash, &save_path)
+        .await
+}
+
+#[tauri::command]
+pub async fn send_room_message(
+    content: String,
+    attachment_hash: Option<String>,
+    attachment_name: Option<String>,
+    room_manager: State<'_, RoomManager>,
+) -> Result<Message, String> {
+    room_manager
+        .send_room_chat(content, attachment_hash, attachment_name)
+        .await
+}
+
+#[tauri::command]
+pub async fn send_direct_message(
+    recipient_node_id: String,
+    content: String,
+    attachment_hash: Option<String>,
+    attachment_name: Option<String>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<Message, String> {
+    ft_manager
+        .send_direct_message(
+            &recipient_node_id,
+            &content,
+            attachment_hash,
+            attachment_name,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn send_message(
+    chat_id: String,
+    content: String,
+    attachment_hash: Option<String>,
+    attachment_name: Option<String>,
+    room_manager: State<'_, RoomManager>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<Message, String> {
+    let current_room_opt = room_manager.get_current_room().await;
+    if let Some(room) = current_room_opt {
+        if room.room_id == chat_id {
+            return room.send_room_chat(content, attachment_hash, attachment_name).await;
+        }
+    }
+
+    ft_manager
+        .send_direct_message(&chat_id, &content, attachment_hash, attachment_name)
+        .await
+}
+
+#[tauri::command]
+pub fn get_messages(
+    chat_id: String,
+    limit: Option<usize>,
+    db: State<'_, Database>,
+) -> Result<Vec<Message>, String> {
+    db.get_messages_for_chat(&chat_id, limit.unwrap_or(50))
+        .map_err(|e| e.to_string())
 }

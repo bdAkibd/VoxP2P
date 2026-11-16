@@ -11,9 +11,41 @@ use iroh::{
 use iroh_blobs::{store::mem::MemStore, BlobsProtocol};
 use iroh_gossip::net::Gossip;
 
+use crate::network::file_transfer::{DirectMessageHandler, DIRECT_MESSAGE_ALPN};
 use crate::network::vpn_bypass::detect_default_physical_interface;
 use crate::storage::db::Database;
 use crate::storage::models::{Contact, LocalProfile};
+
+#[derive(Clone, Default)]
+pub struct DynamicDmHandler {
+    inner: Arc<RwLock<Option<DirectMessageHandler>>>,
+}
+
+impl std::fmt::Debug for DynamicDmHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DynamicDmHandler")
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for DynamicDmHandler {
+    fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> impl std::future::Future<Output = Result<(), iroh::protocol::AcceptError>> + Send {
+        let inner = self.inner.clone();
+        async move {
+            let handler_opt = {
+                let guard = inner.read().await;
+                guard.clone()
+            };
+            if let Some(handler) = handler_opt {
+                handler.accept(connection).await
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NodeStatus {
@@ -46,10 +78,12 @@ pub struct InnerNodeState {
     pub router: Option<Router>,
     pub gossip: Option<Gossip>,
     pub blobs_store: Option<MemStore>,
+    pub dm_handler: DynamicDmHandler,
     pub secret_key: SecretKey,
     pub profile: LocalProfile,
     pub bypass_vpn: bool,
 }
+
 
 #[derive(Clone)]
 pub struct NodeManager {
@@ -67,6 +101,7 @@ impl NodeManager {
             router: None,
             gossip: None,
             blobs_store: None,
+            dm_handler: DynamicDmHandler::default(),
             secret_key,
             profile,
             bypass_vpn: true,
@@ -145,10 +180,11 @@ impl NodeManager {
         // Initialize iroh-gossip protocol
         let gossip = Gossip::builder().spawn(endpoint.clone());
 
-        // Spawn ALPN router for accepting blobs and gossip connections
+        // Spawn ALPN router for accepting blobs, gossip, and direct messages
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs)
             .accept(iroh_gossip::ALPN, gossip.clone())
+            .accept(DIRECT_MESSAGE_ALPN, state.dm_handler.clone())
             .spawn();
 
         state.endpoint = Some(endpoint);
@@ -158,6 +194,16 @@ impl NodeManager {
         state.status = NodeStatus::Running;
 
         Ok(())
+    }
+
+    pub async fn set_dm_handler(&self, handler: DirectMessageHandler) {
+        let state = self.state.read().await;
+        *state.dm_handler.inner.write().await = Some(handler);
+    }
+
+    pub async fn get_blobs_store(&self) -> Option<MemStore> {
+        let state = self.state.read().await;
+        state.blobs_store.clone()
     }
 
     pub async fn get_status(&self) -> NodeStatus {
