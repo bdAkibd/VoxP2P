@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AudioDeviceInfo } from "../types";
+  import type { AudioDeviceInfo, DeviceSyncTicket, ImportSyncResult } from "../types";
   import type { ThemeConfig } from "../theme";
   import { api } from "../api";
   import ThemeStudio from "./ThemeStudio.svelte";
@@ -7,12 +7,14 @@
   let {
     currentTheme = $bindable(),
     onClose,
+    onSyncCompleted,
   }: {
     currentTheme: ThemeConfig;
     onClose: () => void;
+    onSyncCompleted?: () => void;
   } = $props();
 
-  let activeTab = $state<"audio" | "network" | "theme">("audio");
+  let activeTab = $state<"audio" | "network" | "theme" | "sync">("audio");
 
   // Audio State
   let inputDevices = $state<AudioDeviceInfo[]>([]);
@@ -25,6 +27,14 @@
 
   // Network State
   let vpnBypassEnabled = $state<boolean>(true);
+
+  // Sync State
+  let syncTicket = $state<DeviceSyncTicket | null>(null);
+  let importTicketInput = $state<string>("");
+  let syncResult = $state<ImportSyncResult | null>(null);
+  let syncLoading = $state<boolean>(false);
+  let syncError = $state<string | null>(null);
+  let copyFeedback = $state<boolean>(false);
 
   $effect(() => {
     // Fetch available audio devices
@@ -69,6 +79,41 @@
     vpnBypassEnabled = !vpnBypassEnabled;
     await api.setBypassVpn(vpnBypassEnabled);
   }
+
+  async function handleGenerateSyncTicket() {
+    syncLoading = true;
+    syncError = null;
+    try {
+      syncTicket = await api.syncDevices();
+    } catch (err: any) {
+      syncError = err?.toString() || "Failed to generate pairing ticket";
+    } finally {
+      syncLoading = false;
+    }
+  }
+
+  function copySyncTicket() {
+    if (!syncTicket?.ticket) return;
+    navigator.clipboard.writeText(syncTicket.ticket);
+    copyFeedback = true;
+    setTimeout(() => {
+      copyFeedback = false;
+    }, 2000);
+  }
+
+  async function handleImportSyncTicket() {
+    if (!importTicketInput.trim()) return;
+    syncLoading = true;
+    syncError = null;
+    try {
+      syncResult = await api.importSyncTicket(importTicketInput.trim());
+      onSyncCompleted?.();
+    } catch (err: any) {
+      syncError = err?.toString() || "Failed to import sync ticket";
+    } finally {
+      syncLoading = false;
+    }
+  }
 </script>
 
 <div
@@ -103,6 +148,13 @@
           onclick={() => (activeTab = "theme")}
         >
           🎨 Theme Studio
+        </button>
+        <button
+          class="tab-btn"
+          class:active={activeTab === "sync"}
+          onclick={() => (activeTab = "sync")}
+        >
+          📱 Device Linking
         </button>
       </div>
       <button class="dialog-close-btn" onclick={onClose}>&times;</button>
@@ -239,6 +291,62 @@
 
       {:else if activeTab === "theme"}
         <ThemeStudio bind:currentTheme {onClose} />
+      {:else if activeTab === "sync"}
+        <div class="settings-group">
+          <h4>Export & Link to Mobile / Second Device</h4>
+          <p class="section-desc">
+            Export all contacts and message history into an encrypted P2P pairing ticket via iroh-blobs. Share this ticket with your Android phone or another PC to sync your history directly over LAN/P2P.
+          </p>
+          <button class="btn-primary" onclick={handleGenerateSyncTicket} disabled={syncLoading}>
+            {syncLoading ? "Exporting history..." : "Generate Pairing Ticket"}
+          </button>
+
+          {#if syncTicket}
+            <div class="sync-ticket-box">
+              <div class="sync-stats">
+                <span>✓ Exported {syncTicket.contacts_count} contacts & {syncTicket.messages_count} messages</span>
+              </div>
+              <div class="ticket-row">
+                <input type="text" class="ticket-input" readonly value={syncTicket.ticket} />
+                <button class="btn-secondary" onclick={copySyncTicket}>
+                  {copyFeedback ? "Copied! ✓" : "Copy Ticket"}
+                </button>
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="settings-group">
+          <h4>Import & Synchronize from Another Device</h4>
+          <p class="section-desc">
+            Paste a pairing ticket generated on another VoxP2P instance to import all contacts and chat history into this device.
+          </p>
+          <label for="import-sync-ticket-input" class="visually-hidden">Pairing Ticket</label>
+          <textarea
+            id="import-sync-ticket-input"
+            class="sync-textarea"
+            placeholder="Paste pairing ticket here..."
+            bind:value={importTicketInput}
+          ></textarea>
+          <button
+            class="btn-primary"
+            onclick={handleImportSyncTicket}
+            disabled={syncLoading || !importTicketInput.trim()}
+          >
+            {syncLoading ? "Syncing..." : "Sync from Device"}
+          </button>
+
+          {#if syncResult}
+            <div class="sync-success-box">
+              ✓ Successfully synced! Imported {syncResult.contacts_imported} contacts and {syncResult.messages_imported} messages.
+            </div>
+          {/if}
+          {#if syncError}
+            <div class="sync-error-box">
+              ✕ {syncError}
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
   </div>
@@ -447,5 +555,123 @@
 
   .info-item strong {
     color: var(--accent-primary);
+  }
+
+  .section-desc {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .btn-primary {
+    background: var(--accent-primary);
+    color: #ffffff;
+    border: none;
+    border-radius: var(--border-radius);
+    padding: 8px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 8px 14px;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .sync-ticket-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--surface-card);
+    padding: 12px;
+    border-radius: var(--border-radius);
+    border: var(--border-width) solid var(--border-color);
+  }
+
+  .sync-stats {
+    font-size: 0.82rem;
+    color: var(--online-status-color);
+    font-weight: 600;
+  }
+
+  .ticket-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .ticket-input {
+    flex: 1;
+    background: var(--bg-primary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 8px 10px;
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    font-family: monospace;
+  }
+
+  .sync-textarea {
+    width: 100%;
+    min-height: 70px;
+    background: var(--bg-primary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 10px;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    font-family: monospace;
+    resize: vertical;
+  }
+
+  .sync-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+  }
+
+  .sync-success-box {
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid var(--online-status-color);
+    border-radius: var(--border-radius);
+    padding: 10px 14px;
+    color: var(--online-status-color);
+    font-size: 0.85rem;
+  }
+
+  .sync-error-box {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid var(--danger-color);
+    border-radius: var(--border-radius);
+    padding: 10px 14px;
+    color: var(--danger-color);
+    font-size: 0.85rem;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

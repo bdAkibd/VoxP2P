@@ -18,6 +18,36 @@
   let isMuted = $state<boolean>(false);
   let isDeafened = $state<boolean>(false);
   let showSettingsModal = $state<boolean>(false);
+  let isMobileDrawerOpen = $state<boolean>(false);
+
+  // Swipe gesture detection
+  let touchStartX = 0;
+  let touchStartY = 0;
+
+  function handleTouchStart(e: TouchEvent) {
+    if (e.touches.length === 1) {
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+    }
+  }
+
+  function handleTouchEnd(e: TouchEvent) {
+    if (e.changedTouches.length === 1) {
+      const touchEndX = e.changedTouches[0].clientX;
+      const touchEndY = e.changedTouches[0].clientY;
+      const deltaX = touchEndX - touchStartX;
+      const deltaY = touchEndY - touchStartY;
+
+      // Swipe right from left edge to open
+      if (deltaX > 70 && Math.abs(deltaY) < 60 && touchStartX < 50) {
+        isMobileDrawerOpen = true;
+      }
+      // Swipe left to close drawer
+      else if (deltaX < -70 && Math.abs(deltaY) < 60 && isMobileDrawerOpen) {
+        isMobileDrawerOpen = false;
+      }
+    }
+  }
 
   onMount(() => {
     // 1. Initialize Theme
@@ -129,23 +159,68 @@
   }
 </script>
 
+<svelte:window
+  ontouchstart={handleTouchStart}
+  ontouchend={handleTouchEnd}
+/>
+
 <main class="app-layout">
-  <!-- Left: Sidebar -->
-  <Sidebar
-    {profile}
-    {contacts}
-    {roomState}
-    bind:activeChatId
-    bind:isMuted
-    bind:isDeafened
-    onOpenSettings={() => (showSettingsModal = true)}
-    onJoinRoom={handleJoinRoom}
-    onLeaveRoom={handleLeaveRoom}
-    onAddContact={handleAddContact}
-  />
+  <!-- Mobile Backdrop Overlay -->
+  {#if isMobileDrawerOpen}
+    <div
+      class="mobile-backdrop"
+      onclick={() => (isMobileDrawerOpen = false)}
+      onkeydown={(e) => e.key === "Escape" && (isMobileDrawerOpen = false)}
+      role="button"
+      tabindex="-1"
+      aria-label="Close menu drawer"
+    ></div>
+  {/if}
+
+  <!-- Left: Sidebar Drawer Wrapper -->
+  <div class="sidebar-wrapper" class:open={isMobileDrawerOpen}>
+    <Sidebar
+      {profile}
+      {contacts}
+      {roomState}
+      bind:activeChatId
+      bind:isMuted
+      bind:isDeafened
+      onOpenSettings={() => (showSettingsModal = true)}
+      onJoinRoom={(roomId) => {
+        handleJoinRoom(roomId);
+        isMobileDrawerOpen = false;
+      }}
+      onLeaveRoom={handleLeaveRoom}
+      onAddContact={handleAddContact}
+    />
+  </div>
 
   <!-- Right: Voice Call Top Panel + Chat Bottom Panel -->
   <section class="main-content-panel">
+    <!-- Mobile Header Bar with Hamburger Button -->
+    <div class="mobile-header-bar">
+      <button
+        class="hamburger-btn"
+        aria-label="Toggle navigation drawer"
+        onclick={() => (isMobileDrawerOpen = !isMobileDrawerOpen)}
+      >
+        ☰
+      </button>
+      <span class="mobile-chat-title">
+        {activeChatId.startsWith("room_") || activeChatId.length < 32
+          ? `Room: ${activeChatId}`
+          : `Direct: ${activeChatId.slice(0, 10)}...`}
+      </span>
+      <button
+        class="mobile-settings-btn"
+        aria-label="Open settings"
+        onclick={() => (showSettingsModal = true)}
+      >
+        ⚙
+      </button>
+    </div>
+
     <CallView {roomState} {profile} {audioLevels} />
     <ChatView
       {activeChatId}
@@ -156,11 +231,17 @@
     />
   </section>
 
-  <!-- Settings Modal (Voice, Network, Theme Studio) -->
+  <!-- Settings Modal (Voice, Network, Theme Studio, Device Linking) -->
   {#if showSettingsModal}
     <SettingsModal
       bind:currentTheme
       onClose={() => (showSettingsModal = false)}
+      onSyncCompleted={() => {
+        loadContacts();
+        if (activeChatId) {
+          api.getMessages(activeChatId, 50).then((res) => (messages = res));
+        }
+      }}
     />
   {/if}
 </main>
@@ -204,6 +285,11 @@
     width: 100vw;
     height: 100vh;
     overflow: hidden;
+    position: relative;
+  }
+
+  .sidebar-wrapper {
+    display: contents;
   }
 
   .main-content-panel {
@@ -212,5 +298,65 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+  }
+
+  .mobile-header-bar {
+    display: none;
+  }
+
+  @media (max-width: 768px) {
+    .sidebar-wrapper {
+      display: block;
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 280px;
+      z-index: 150;
+      transform: translateX(-100%);
+      transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .sidebar-wrapper.open {
+      transform: translateX(0);
+      box-shadow: 6px 0 24px rgba(0, 0, 0, 0.6);
+    }
+
+    .mobile-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      z-index: 140;
+    }
+
+    .mobile-header-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--bg-secondary);
+      border-bottom: var(--border-width) solid var(--border-color);
+      z-index: 10;
+    }
+
+    .hamburger-btn, .mobile-settings-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-size: 1.3rem;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: var(--border-radius);
+    }
+
+    .hamburger-btn:hover, .mobile-settings-btn:hover {
+      background: var(--bg-tertiary);
+    }
+
+    .mobile-chat-title {
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: var(--text-primary);
+    }
   }
 </style>

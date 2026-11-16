@@ -47,6 +47,29 @@ pub struct AttachFileResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceSyncTicket {
+    pub ticket: String,
+    pub blob_hash: String,
+    pub contacts_count: usize,
+    pub messages_count: usize,
+    pub exported_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceSyncPackage {
+    pub source_node_id: String,
+    pub contacts: Vec<crate::storage::models::Contact>,
+    pub messages: Vec<crate::storage::models::Message>,
+    pub exported_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportSyncResult {
+    pub contacts_imported: usize,
+    pub messages_imported: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DirectMessageEnvelope {
     Message(Message),
@@ -603,6 +626,107 @@ impl FileTransferManager {
         }
     }
 
+    /// Exports contacts and chat history into a serialized JSON blob in iroh-blobs,
+    /// generating a pairing ticket so a mobile or second device can synchronize history.
+    pub async fn sync_devices(&self) -> Result<DeviceSyncTicket, String> {
+        let contacts = self.db.get_contacts().map_err(|e| e.to_string())?;
+        let messages = self.db.get_all_messages().map_err(|e| e.to_string())?;
+        let local_id = self.local_node_id.read().await.clone();
+        let exported_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let package = DeviceSyncPackage {
+            source_node_id: local_id,
+            contacts: contacts.clone(),
+            messages: messages.clone(),
+            exported_at,
+        };
+
+        let json_bytes = serde_json::to_vec(&package).map_err(|e| e.to_string())?;
+
+        let blobs_store = {
+            let guard = self.blobs_store.read().await;
+            guard
+                .clone()
+                .ok_or_else(|| "Blobs store not initialized".to_string())?
+        };
+
+        let tag = blobs_store
+            .add_bytes(json_bytes)
+            .temp_tag()
+            .await
+            .map_err(|e| format!("Failed to import sync blob into store: {e}"))?;
+        let hash = tag.hash();
+        let hash_str = hash.to_string();
+
+        let endpoint_opt = self.endpoint.read().await.clone();
+        let ticket_str = if let Some(endpoint) = endpoint_opt {
+            let addr = endpoint.addr();
+            let ticket = BlobTicket::new(addr, hash, BlobFormat::Raw);
+            ticket.to_string()
+        } else {
+            hash_str.clone()
+        };
+
+        Ok(DeviceSyncTicket {
+            ticket: ticket_str,
+            blob_hash: hash_str,
+            contacts_count: contacts.len(),
+            messages_count: messages.len(),
+            exported_at,
+        })
+    }
+
+    /// Imports contacts and chat messages from a pairing ticket or raw sync package JSON.
+    pub async fn import_sync_ticket(&self, ticket_str: &str) -> Result<ImportSyncResult, String> {
+        let package: DeviceSyncPackage = if ticket_str.trim().starts_with('{') {
+            serde_json::from_str(ticket_str).map_err(|e| format!("Invalid sync package JSON: {e}"))?
+        } else {
+            let ticket = BlobTicket::from_str(ticket_str)
+                .map_err(|e| format!("Invalid sync blob ticket: {e}"))?;
+
+            let endpoint = self
+                .endpoint
+                .read()
+                .await
+                .clone()
+                .ok_or_else(|| "Endpoint not initialized".to_string())?;
+
+            let conn = endpoint
+                .connect(ticket.addr().clone(), iroh_blobs::ALPN)
+                .await
+                .map_err(|e| format!("Failed to connect for sync import: {e}"))?;
+
+            let (bytes, _) = iroh_blobs::get::request::get_blob(conn, ticket.hash())
+                .bytes_and_stats()
+                .await
+                .map_err(|e| format!("Failed to download sync blob: {e}"))?;
+
+            serde_json::from_slice(&bytes).map_err(|e| format!("Failed to deserialize sync package: {e}"))?
+        };
+
+        let mut contacts_imported = 0;
+        for c in package.contacts {
+            if self.db.insert_or_update_contact(&c).is_ok() {
+                contacts_imported += 1;
+            }
+        }
+
+        let mut messages_imported = 0;
+        for m in package.messages {
+            if self.db.insert_message(&m).is_ok() {
+                messages_imported += 1;
+            }
+        }
+
+        Ok(ImportSyncResult {
+            contacts_imported,
+            messages_imported,
+        })
+    }
+
     pub fn stop(&self) {
         self.offline_watcher_cancel.store(true, Ordering::Release);
     }
@@ -689,5 +813,68 @@ mod tests {
         db.mark_message_delivered(&msg.id).unwrap();
         let remaining = db.get_undelivered_messages("recipient_offline_node").unwrap();
         assert_eq!(remaining.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_device_sync_export_and_import() {
+        let db = Database::new_in_memory().unwrap();
+        let temp_dir = std::env::temp_dir().join("voxp2p_test_sync");
+        let ft = FileTransferManager::new(db.clone(), temp_dir);
+        let blobs_store = MemStore::new();
+        *ft.blobs_store.write().await = Some(blobs_store);
+
+        // Insert contact and message
+        let contact = crate::storage::models::Contact {
+            node_id: "test_node_id_12345".to_string(),
+            nickname: "TestContact".to_string(),
+            avatar_path: None,
+            custom_volume: 1.0,
+            last_seen: 100,
+        };
+        db.insert_or_update_contact(&contact).unwrap();
+
+        let msg = Message {
+            id: "msg_sync_1".to_string(),
+            chat_id: "test_node_id_12345".to_string(),
+            sender_id: "local_node".to_string(),
+            content: "Sync test content".to_string(),
+            attachment_hash: None,
+            attachment_name: None,
+            timestamp: 200,
+            delivered: 1,
+        };
+        db.insert_message(&msg).unwrap();
+
+        // 1. Export sync package ticket
+        let sync_ticket = ft.sync_devices().await.unwrap();
+        assert_eq!(sync_ticket.contacts_count, 1);
+        assert_eq!(sync_ticket.messages_count, 1);
+        assert!(!sync_ticket.ticket.is_empty());
+
+        // 2. Import into a fresh new second DB
+        let db2 = Database::new_in_memory().unwrap();
+        let temp_dir2 = std::env::temp_dir().join("voxp2p_test_sync2");
+        let ft2 = FileTransferManager::new(db2.clone(), temp_dir2);
+
+        let package = DeviceSyncPackage {
+            source_node_id: "local_node".to_string(),
+            contacts: vec![contact],
+            messages: vec![msg],
+            exported_at: 300,
+        };
+        let raw_json = serde_json::to_string(&package).unwrap();
+
+        let import_res = ft2.import_sync_ticket(&raw_json).await.unwrap();
+        assert_eq!(import_res.contacts_imported, 1);
+        assert_eq!(import_res.messages_imported, 1);
+
+        // Verify in db2
+        let imported_contacts = db2.get_contacts().unwrap();
+        assert_eq!(imported_contacts.len(), 1);
+        assert_eq!(imported_contacts[0].nickname, "TestContact");
+
+        let imported_msgs = db2.get_messages_for_chat("test_node_id_12345", 10).unwrap();
+        assert_eq!(imported_msgs.len(), 1);
+        assert_eq!(imported_msgs[0].content, "Sync test content");
     }
 }

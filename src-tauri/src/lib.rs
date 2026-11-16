@@ -17,6 +17,7 @@ use ipc::commands::{
     get_room_state,
     get_saved_themes,
     get_undelivered_messages,
+    import_sync_ticket,
     join_room,
     leave_room,
     list_audio_devices,
@@ -35,6 +36,7 @@ use ipc::commands::{
     set_output_device,
     set_peer_volume,
     set_rnnoise,
+    sync_devices,
     transfer_host,
     update_profile,
 };
@@ -175,7 +177,9 @@ pub fn run() {
             set_rnnoise,
             set_bypass_vpn,
             save_theme,
-            get_saved_themes
+            get_saved_themes,
+            sync_devices,
+            import_sync_ticket
         ])
 
         .run(tauri::generate_context!())

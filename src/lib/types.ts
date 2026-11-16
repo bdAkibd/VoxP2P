@@ -75,3 +75,16 @@ export interface AttachFileResponse {
   mime_type: string;
   ticket: string;
 }
+
+export interface DeviceSyncTicket {
+  ticket: string;
+  blob_hash: string;
+  contacts_count: number;
+  messages_count: number;
+  exported_at: number;
+}
+
+export interface ImportSyncResult {
+  contacts_imported: number;
+  messages_imported: number;
+}

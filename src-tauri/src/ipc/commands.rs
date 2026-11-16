@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use tauri::State;
 use crate::audio::{AudioDeviceInfo, AudioDevicesResponse, AudioManager};
-use crate::network::file_transfer::{AttachFileResponse, FileTransferManager};
+use crate::network::file_transfer::{
+    AttachFileResponse, DeviceSyncTicket, FileTransferManager, ImportSyncResult,
+};
 use crate::network::node::{NodeManager, NodeStatus, UserProfile};
 use crate::network::room::{RoomGossipMessage, RoomManager, RoomState};
 use crate::storage::db::Database;
@@ -350,4 +352,19 @@ pub async fn get_saved_themes(app_handle: tauri::AppHandle) -> Result<String, St
     } else {
         Ok("{}".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn sync_devices(
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<DeviceSyncTicket, String> {
+    ft_manager.sync_devices().await
+}
+
+#[tauri::command]
+pub async fn import_sync_ticket(
+    ticket: String,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<ImportSyncResult, String> {
+    ft_manager.import_sync_ticket(&ticket).await
 }

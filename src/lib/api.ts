@@ -9,6 +9,8 @@ import type {
   TransferProgressPayload,
   HostChangedPayload,
   AttachFileResponse,
+  DeviceSyncTicket,
+  ImportSyncResult,
 } from "./types";
 
 export const api = {
@@ -167,6 +169,14 @@ export const api = {
       chatId,
       limit,
     });
+  },
+
+  async syncDevices(): Promise<DeviceSyncTicket> {
+    return await invoke<DeviceSyncTicket>("sync_devices");
+  },
+
+  async importSyncTicket(ticket: string): Promise<ImportSyncResult> {
+    return await invoke<ImportSyncResult>("import_sync_ticket", { ticket });
   },
 
   // Event Listeners
