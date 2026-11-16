@@ -3,7 +3,9 @@ use crate::audio::mixer::PeerVolumeLevel;
 use crate::storage::models::ChatMessage;
 
 pub const EVENT_VOLUME_LEVELS: &str = "voxp2p://volume-levels";
+pub const EVENT_AUDIO_LEVELS: &str = "audio://levels";
 pub const EVENT_ROOM_STATE: &str = "voxp2p://room-state";
+
 pub const EVENT_CHAT_MESSAGE: &str = "voxp2p://chat-message";
 pub const EVENT_FILE_TRANSFER: &str = "voxp2p://file-transfer";
 pub const EVENT_HOST_CHANGED: &str = "room://host-changed";

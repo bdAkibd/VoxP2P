@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use tauri::State;
-use crate::audio::capture::AudioDeviceInfo;
+use crate::audio::{AudioDeviceInfo, AudioDevicesResponse, AudioManager};
 use crate::network::node::{NodeManager, NodeStatus, UserProfile};
+
 use crate::network::room::{RoomManager, RoomState};
 use crate::storage::db::Database;
 use crate::storage::models::{Contact, Message};
@@ -46,38 +48,106 @@ pub fn get_undelivered_messages(
 }
 
 #[tauri::command]
-pub fn list_audio_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
-    Ok(vec![AudioDeviceInfo {
-        id: "default_in".to_string(),
-        name: "Default System Microphone".to_string(),
-        is_default: true,
-    }])
+pub fn list_audio_devices(
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<AudioDevicesResponse, String> {
+    Ok(audio_manager.list_devices())
 }
 
 #[tauri::command]
-pub fn list_audio_output_devices() -> Result<Vec<AudioDeviceInfo>, String> {
-    Ok(vec![AudioDeviceInfo {
-        id: "default_out".to_string(),
-        name: "Default System Speaker".to_string(),
-        is_default: true,
-    }])
+pub fn list_audio_input_devices(
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<Vec<AudioDeviceInfo>, String> {
+    Ok(audio_manager.list_devices().input_devices)
 }
 
 #[tauri::command]
-pub fn set_microphone_gain(gain: f32) -> Result<(), String> {
-    if !(0.0..=2.0).contains(&gain) {
-        return Err("Gain out of range [0.0, 2.0]".to_string());
-    }
+pub fn list_audio_output_devices(
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<Vec<AudioDeviceInfo>, String> {
+    Ok(audio_manager.list_devices().output_devices)
+}
+
+#[tauri::command]
+pub fn set_input_device(
+    name: String,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    let dev = if name.is_empty() || name == "default" {
+        None
+    } else {
+        Some(name.as_str())
+    };
+    audio_manager.set_input_device(dev)
+}
+
+#[tauri::command]
+pub fn set_output_device(
+    name: String,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    let dev = if name.is_empty() || name == "default" {
+        None
+    } else {
+        Some(name.as_str())
+    };
+    audio_manager.set_output_device(dev)
+}
+
+#[tauri::command]
+pub fn set_mute(
+    muted: bool,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    audio_manager.set_mute(muted);
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_master_volume(volume: f32) -> Result<(), String> {
+pub fn set_deafen(
+    deafened: bool,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    audio_manager.set_deafen(deafened);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_peer_volume(
+    node_id: String,
+    volume: f32,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
     if !(0.0..=2.0).contains(&volume) {
         return Err("Volume out of range [0.0, 2.0]".to_string());
     }
+    audio_manager.set_peer_volume(&node_id, volume)
+}
+
+#[tauri::command]
+pub fn set_microphone_gain(
+    gain: f32,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    if !(0.0..=2.0).contains(&gain) {
+        return Err("Gain out of range [0.0, 2.0]".to_string());
+    }
+    audio_manager.set_microphone_gain(gain);
     Ok(())
 }
+
+#[tauri::command]
+pub fn set_master_volume(
+    volume: f32,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    if !(0.0..=2.0).contains(&volume) {
+        return Err("Volume out of range [0.0, 2.0]".to_string());
+    }
+    audio_manager.set_master_volume(volume);
+    Ok(())
+}
+
 
 #[tauri::command]
 pub async fn transfer_host(

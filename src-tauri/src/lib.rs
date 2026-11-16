@@ -4,6 +4,7 @@ pub mod network;
 pub mod storage;
 
 use tauri::Manager;
+use audio::AudioManager;
 use ipc::commands::{
     add_contact,
     get_contacts,
@@ -13,13 +14,20 @@ use ipc::commands::{
     get_undelivered_messages,
     join_room,
     leave_room,
+    list_audio_devices,
     list_audio_input_devices,
     list_audio_output_devices,
+    set_deafen,
+    set_input_device,
     set_master_volume,
     set_microphone_gain,
+    set_mute,
+    set_output_device,
+    set_peer_volume,
     transfer_host,
     update_profile,
 };
+
 use network::node::NodeManager;
 use network::room::RoomManager;
 use storage::db::Database;
@@ -45,6 +53,8 @@ pub fn run() {
                 Some(app.handle().clone()),
             );
 
+            let audio_manager = AudioManager::new(db.clone(), Some(app.handle().clone()));
+
             let nm_clone = node_manager.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = nm_clone.start().await {
@@ -52,9 +62,21 @@ pub fn run() {
                 }
             });
 
+            let am_clone = audio_manager.clone();
+            let nm_audio = node_manager.clone();
+            tauri::async_runtime::spawn(async move {
+                let node_id = nm_audio.get_node_id().await;
+                am_clone.set_local_node_id(&node_id);
+                if let Err(e) = am_clone.start() {
+                    eprintln!("Warning: Audio pipeline start failed: {e}");
+                }
+            });
+
+
             app.manage(db);
             app.manage(node_manager);
             app.manage(room_manager);
+            app.manage(audio_manager);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -64,8 +86,14 @@ pub fn run() {
             get_node_status,
             get_contacts,
             get_undelivered_messages,
+            list_audio_devices,
             list_audio_input_devices,
             list_audio_output_devices,
+            set_input_device,
+            set_output_device,
+            set_mute,
+            set_deafen,
+            set_peer_volume,
             set_microphone_gain,
             set_master_volume,
             transfer_host,
@@ -73,6 +101,7 @@ pub fn run() {
             join_room,
             leave_room
         ])
+
         .run(tauri::generate_context!())
         .expect("error while running voxp2p application");
 }

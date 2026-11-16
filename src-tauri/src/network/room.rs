@@ -651,6 +651,28 @@ impl RoomSession {
         }
     }
 
+    /// Broadcasts an Opus audio frame to all remote peers in the room.
+    /// Returns destination node IDs and prepared datagram bytes (either direct or relayed via Host).
+    pub async fn broadcast_audio_frame(&self, seq: u64, opus_data: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let peers = {
+            let st = self.state.read().await;
+            st.peers.iter().map(|p| p.node_id.clone()).collect::<Vec<_>>()
+        };
+
+        let mut datagrams = Vec::new();
+        for peer_id in peers {
+            if peer_id == self.local_node_id {
+                continue;
+            }
+            if let Ok(datagram) = self.prepare_audio_datagram(&peer_id, seq, opus_data.to_vec()).await {
+                datagrams.push(datagram);
+            }
+        }
+        datagrams
+    }
+
+
+
     /// Evaluates direct connection status with 3-second timeout.
     /// If direct QUIC connection cannot be established within 3s, marks peer as requiring relay fallback.
     pub async fn evaluate_direct_connection<F, Fut>(&self, target_id: &str, connect_fn: F)
@@ -853,7 +875,21 @@ impl RoomManager {
             room.close().await;
         }
     }
+
+    /// Broadcasts an Opus audio frame across all peers in the active room.
+    pub async fn broadcast_audio_frame(&self, seq: u64, opus_data: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let room = {
+            let inner = self.inner.read().await;
+            inner.current_room.clone()
+        };
+        if let Some(r) = room {
+            r.broadcast_audio_frame(seq, opus_data).await
+        } else {
+            Vec::new()
+        }
+    }
 }
+
 
 // ============================================================================
 // 6. Unit Tests
