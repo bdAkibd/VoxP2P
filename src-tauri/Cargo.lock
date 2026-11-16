@@ -7158,6 +7158,7 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "mdns-sd",
+ "netdev 0.45.1",
  "nnnoiseless",
  "ringbuf",
  "rusqlite",

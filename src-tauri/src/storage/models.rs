@@ -1,34 +1,32 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalProfile {
+    pub node_id: String,
+    pub secret_key_bytes: Vec<u8>,
+    pub nickname: String,
+    pub avatar_hash: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
     pub node_id: String,
     pub nickname: String,
-    pub added_at: i64,
+    pub avatar_path: Option<String>,
+    pub custom_volume: f64,
+    pub last_seen: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
+pub struct Message {
     pub id: String,
-    pub room_id: String,
-    pub sender_node_id: String,
+    pub chat_id: String,
+    pub sender_id: String,
     pub content: String,
+    pub attachment_hash: Option<String>,
+    pub attachment_name: Option<String>,
     pub timestamp: i64,
+    pub delivered: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueuedMessage {
-    pub id: String,
-    pub target_node_id: String,
-    pub payload: Vec<u8>,
-    pub attempts: u32,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThemePalette {
-    pub id: String,
-    pub name: String,
-    pub colors: HashMap<String, String>,
-}
+pub type ChatMessage = Message;

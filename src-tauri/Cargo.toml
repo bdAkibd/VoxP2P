@@ -25,6 +25,7 @@ iroh-gossip = "0.102.0"
 iroh-blobs = "0.105.0"
 socket2 = { version = "0.6", features = ["all"] }
 mdns-sd = "0.21"
+netdev = "0.45"
 
 # Audio Pipeline
 cpal = "0.18"

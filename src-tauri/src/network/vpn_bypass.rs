@@ -1,38 +1,132 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use socket2::{Domain, Protocol, Socket, Type};
 
+const VIRTUAL_ADAPTER_KEYWORDS: &[&str] = &[
+    "tun",
+    "tap",
+    "wintun",
+    "wireguard",
+    "wg",
+    "nekobox",
+    "hamachi",
+    "radmin",
+];
+
 /// Represents information about a detected local network interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalInterface {
     pub index: u32,
     pub name: String,
+    pub friendly_name: Option<String>,
     pub is_physical: bool,
 }
 
-/// Binds a UDP socket directly to a physical network interface to bypass virtual TUN/TAP VPN adapters.
-pub fn bind_physical_udp_socket(interface_index: u32, bind_port: u16) -> std::io::Result<UdpSocket> {
+/// Checks if an interface name or friendly name corresponds to a known virtual VPN/tunnel adapter.
+pub fn is_virtual_adapter(name: &str, friendly_name: Option<&str>) -> bool {
+    let lower_name = name.to_ascii_lowercase();
+    for kw in VIRTUAL_ADAPTER_KEYWORDS {
+        if lower_name.contains(kw) {
+            return true;
+        }
+    }
+    if let Some(fname) = friendly_name {
+        let lower_fname = fname.to_ascii_lowercase();
+        for kw in VIRTUAL_ADAPTER_KEYWORDS {
+            if lower_fname.contains(kw) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Detects the default physical network interface, ignoring virtual adapters matching
+/// `tun`, `tap`, `wintun`, `wireguard`, `nekobox`, `hamachi`, `radmin`.
+pub fn detect_default_physical_interface() -> Option<PhysicalInterface> {
+    let interfaces = netdev::get_interfaces();
+
+    // First try the default interface if netdev identifies one
+    if let Ok(default_iface) = netdev::get_default_interface() {
+        if !is_virtual_adapter(&default_iface.name, default_iface.friendly_name.as_deref())
+            && !default_iface.is_loopback()
+            && default_iface.is_up()
+        {
+            return Some(PhysicalInterface {
+                index: default_iface.index,
+                name: default_iface.name,
+                friendly_name: default_iface.friendly_name,
+                is_physical: true,
+            });
+        }
+    }
+
+    // Fall back to scanning all interfaces
+    for iface in interfaces {
+        if iface.is_loopback() || !iface.is_up() {
+            continue;
+        }
+
+        if is_virtual_adapter(&iface.name, iface.friendly_name.as_deref()) {
+            continue;
+        }
+
+        // Must have at least one IPv4 address
+        if iface.ipv4.is_empty() {
+            continue;
+        }
+
+        return Some(PhysicalInterface {
+            index: iface.index,
+            name: iface.name,
+            friendly_name: iface.friendly_name,
+            is_physical: true,
+        });
+    }
+
+    None
+}
+
+/// Creates and binds a UDP socket. If `bypass_vpn` is true, attempts to bind directly
+/// to the physical network adapter to bypass virtual VPN tunnels.
+pub fn create_udp_socket(bind_port: u16, bypass_vpn: bool) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_nonblocking(true)?;
     socket.set_reuse_address(true)?;
 
-    #[cfg(target_os = "windows")]
-    {
-        apply_windows_unicast_if(&socket, interface_index)?;
-    }
+    if bypass_vpn {
+        if let Some(physical_if) = detect_default_physical_interface() {
+            #[cfg(target_os = "windows")]
+            {
+                apply_windows_unicast_if(&socket, physical_if.index)?;
+            }
 
-    #[cfg(target_os = "linux")]
-    {
-        apply_linux_bind_device(&socket, interface_index)?;
-    }
+            #[cfg(target_os = "linux")]
+            {
+                apply_linux_bind_device(&socket, &physical_if.name)?;
+            }
 
-    #[cfg(target_os = "macos")]
-    {
-        apply_macos_bound_if(&socket, interface_index)?;
-    }
+            #[cfg(target_os = "macos")]
+            {
+                apply_macos_bound_if(&socket, physical_if.index)?;
+            }
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        let _ = interface_index;
+            #[cfg(target_os = "android")]
+            {
+                // On Android, bypass requires VpnService protect() which is handled via JNI;
+                // fallback to standard UDP bind so builds and standard routing work safely.
+                let _ = physical_if;
+            }
+
+            #[cfg(not(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "android"
+            )))]
+            {
+                let _ = physical_if;
+            }
+        }
     }
 
     let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, bind_port));
@@ -78,8 +172,7 @@ fn apply_windows_unicast_if(socket: &Socket, interface_index: u32) -> std::io::R
 }
 
 #[cfg(target_os = "linux")]
-fn apply_linux_bind_device(socket: &Socket, interface_index: u32) -> std::io::Result<()> {
-    let device_name = format!("if{}", interface_index);
+fn apply_linux_bind_device(socket: &Socket, device_name: &str) -> std::io::Result<()> {
     socket.bind_device(Some(device_name.as_bytes()))
 }
 
@@ -116,4 +209,23 @@ fn apply_macos_bound_if(socket: &Socket, interface_index: u32) -> std::io::Resul
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_virtual_adapter() {
+        assert!(is_virtual_adapter("wintun-adapter", None));
+        assert!(is_virtual_adapter("Ethernet 2", Some("TAP-Windows Adapter V9")));
+        assert!(is_virtual_adapter("wg0", None));
+        assert!(is_virtual_adapter("NekoBox Virtual Tun", None));
+        assert!(is_virtual_adapter("hamachi0", None));
+        assert!(is_virtual_adapter("radmin vpn", None));
+
+        assert!(!is_virtual_adapter("eth0", Some("Intel(R) Ethernet Connection")));
+        assert!(!is_virtual_adapter("Wi-Fi", Some("Intel(R) Wi-Fi 6 AX200")));
+    }
 }

@@ -1,54 +1,65 @@
 use std::path::Path;
-use rusqlite::{params, Connection, Result};
-use crate::storage::models::{ChatMessage, Contact, QueuedMessage};
+use std::sync::{Arc, Mutex};
+use rusqlite::{params, Connection, OptionalExtension, Result};
+use crate::storage::models::{Contact, LocalProfile, Message};
 
+#[derive(Clone)]
 pub struct Database {
-    conn: Connection,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
     pub fn new_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn };
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         db.create_tables()?;
         Ok(db)
     }
 
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn };
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         db.create_tables()?;
         Ok(db)
     }
 
-    fn create_tables(&self) -> Result<()> {
-        self.conn.execute(
+    pub fn create_tables(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS local_profile (
+                node_id TEXT PRIMARY KEY,
+                secret_key_bytes BLOB NOT NULL,
+                nickname TEXT NOT NULL,
+                avatar_hash TEXT
+            )",
+            [],
+        )?;
+
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS contacts (
                 node_id TEXT PRIMARY KEY,
                 nickname TEXT NOT NULL,
-                added_at INTEGER NOT NULL
+                avatar_path TEXT,
+                custom_volume REAL DEFAULT 1.0,
+                last_seen INTEGER NOT NULL
             )",
             [],
         )?;
 
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS chat_messages (
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
-                room_id TEXT NOT NULL,
-                sender_node_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
                 content TEXT NOT NULL,
-                timestamp INTEGER NOT NULL
-            )",
-            [],
-        )?;
-
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS queued_messages (
-                id TEXT PRIMARY KEY,
-                target_node_id TEXT NOT NULL,
-                payload BLOB NOT NULL,
-                attempts INTEGER NOT NULL,
-                created_at INTEGER NOT NULL
+                attachment_hash TEXT,
+                attachment_name TEXT,
+                timestamp INTEGER NOT NULL,
+                delivered INTEGER DEFAULT 0
             )",
             [],
         )?;
@@ -56,98 +67,318 @@ impl Database {
         Ok(())
     }
 
-    pub fn insert_contact(&self, contact: &Contact) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO contacts (node_id, nickname, added_at) VALUES (?1, ?2, ?3)",
-            params![contact.node_id, contact.nickname, contact.added_at],
+    // --- Local Profile CRUD ---
+
+    pub fn get_local_profile(&self) -> Result<Option<LocalProfile>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT node_id, secret_key_bytes, nickname, avatar_hash FROM local_profile LIMIT 1",
+        )?;
+        let profile = stmt
+            .query_row([], |row| {
+                Ok(LocalProfile {
+                    node_id: row.get(0)?,
+                    secret_key_bytes: row.get(1)?,
+                    nickname: row.get(2)?,
+                    avatar_hash: row.get(3)?,
+                })
+            })
+            .optional()?;
+        Ok(profile)
+    }
+
+    pub fn save_local_profile(&self, profile: &LocalProfile) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO local_profile (node_id, secret_key_bytes, nickname, avatar_hash)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                profile.node_id,
+                profile.secret_key_bytes,
+                profile.nickname,
+                profile.avatar_hash
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_profile(&self, nickname: &str, avatar_hash: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_profile SET nickname = ?1, avatar_hash = ?2",
+            params![nickname, avatar_hash],
+        )?;
+        Ok(())
+    }
+
+    // --- Contacts CRUD ---
+
+    pub fn insert_or_update_contact(&self, contact: &Contact) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO contacts (node_id, nickname, avatar_path, custom_volume, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                contact.node_id,
+                contact.nickname,
+                contact.avatar_path,
+                contact.custom_volume,
+                contact.last_seen
+            ],
         )?;
         Ok(())
     }
 
     pub fn get_contacts(&self) -> Result<Vec<Contact>> {
-        let mut stmt = self.conn.prepare("SELECT node_id, nickname, added_at FROM contacts ORDER BY nickname ASC")?;
-        let contact_iter = stmt.query_map([], |row| {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT node_id, nickname, avatar_path, custom_volume, last_seen
+             FROM contacts
+             ORDER BY nickname ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
             Ok(Contact {
                 node_id: row.get(0)?,
                 nickname: row.get(1)?,
-                added_at: row.get(2)?,
+                avatar_path: row.get(2)?,
+                custom_volume: row.get(3)?,
+                last_seen: row.get(4)?,
             })
         })?;
 
         let mut contacts = Vec::new();
-        for contact in contact_iter {
+        for contact in rows {
             contacts.push(contact?);
         }
         Ok(contacts)
     }
 
-    pub fn insert_chat_message(&self, msg: &ChatMessage) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO chat_messages (id, room_id, sender_node_id, content, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![msg.id, msg.room_id, msg.sender_node_id, msg.content, msg.timestamp],
+    pub fn get_contact(&self, node_id: &str) -> Result<Option<Contact>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT node_id, nickname, avatar_path, custom_volume, last_seen
+             FROM contacts
+             WHERE node_id = ?1",
+        )?;
+        let contact = stmt
+            .query_row(params![node_id], |row| {
+                Ok(Contact {
+                    node_id: row.get(0)?,
+                    nickname: row.get(1)?,
+                    avatar_path: row.get(2)?,
+                    custom_volume: row.get(3)?,
+                    last_seen: row.get(4)?,
+                })
+            })
+            .optional()?;
+        Ok(contact)
+    }
+
+    pub fn delete_contact(&self, node_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM contacts WHERE node_id = ?1", params![node_id])?;
+        Ok(())
+    }
+
+    pub fn update_contact_volume(&self, node_id: &str, volume: f64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE contacts SET custom_volume = ?1 WHERE node_id = ?2",
+            params![volume, node_id],
         )?;
         Ok(())
     }
 
-    pub fn get_room_messages(&self, room_id: &str, limit: usize) -> Result<Vec<ChatMessage>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, room_id, sender_node_id, content, timestamp 
-             FROM chat_messages 
-             WHERE room_id = ?1 
-             ORDER BY timestamp ASC 
+    pub fn update_contact_last_seen(&self, node_id: &str, timestamp: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE contacts SET last_seen = ?1 WHERE node_id = ?2",
+            params![timestamp, node_id],
+        )?;
+        Ok(())
+    }
+
+    // --- Messages CRUD ---
+
+    pub fn insert_message(&self, message: &Message) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO messages (id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                message.id,
+                message.chat_id,
+                message.sender_id,
+                message.content,
+                message.attachment_hash,
+                message.attachment_name,
+                message.timestamp,
+                message.delivered
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_messages_for_chat(&self, chat_id: &str, limit: usize) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
+             FROM messages
+             WHERE chat_id = ?1
+             ORDER BY timestamp ASC
              LIMIT ?2",
         )?;
-        let msg_iter = stmt.query_map(params![room_id, limit as i64], |row| {
-            Ok(ChatMessage {
+        let rows = stmt.query_map(params![chat_id, limit as i64], |row| {
+            Ok(Message {
                 id: row.get(0)?,
-                room_id: row.get(1)?,
-                sender_node_id: row.get(2)?,
+                chat_id: row.get(1)?,
+                sender_id: row.get(2)?,
                 content: row.get(3)?,
-                timestamp: row.get(4)?,
+                attachment_hash: row.get(4)?,
+                attachment_name: row.get(5)?,
+                timestamp: row.get(6)?,
+                delivered: row.get(7)?,
             })
         })?;
 
         let mut messages = Vec::new();
-        for msg in msg_iter {
+        for msg in rows {
             messages.push(msg?);
         }
         Ok(messages)
     }
 
-    pub fn enqueue_message(&self, msg: &QueuedMessage) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO queued_messages (id, target_node_id, payload, attempts, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![msg.id, msg.target_node_id, msg.payload, msg.attempts, msg.created_at],
+    pub fn mark_message_delivered(&self, message_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET delivered = 1 WHERE id = ?1",
+            params![message_id],
         )?;
         Ok(())
     }
 
-    pub fn pop_queued_messages(&self, limit: usize) -> Result<Vec<QueuedMessage>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, target_node_id, payload, attempts, created_at 
-             FROM queued_messages 
-             ORDER BY created_at ASC 
-             LIMIT ?1",
+    /// Fetches all undelivered messages queued for a given contact / node_id.
+    pub fn get_undelivered_messages(&self, node_id: &str) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
+             FROM messages
+             WHERE delivered = 0 AND (chat_id = ?1 OR sender_id != ?1)
+             ORDER BY timestamp ASC",
         )?;
-        let msg_iter = stmt.query_map(params![limit as i64], |row| {
-            Ok(QueuedMessage {
+        let rows = stmt.query_map(params![node_id], |row| {
+            Ok(Message {
                 id: row.get(0)?,
-                target_node_id: row.get(1)?,
-                payload: row.get(2)?,
-                attempts: row.get(3)?,
-                created_at: row.get(4)?,
+                chat_id: row.get(1)?,
+                sender_id: row.get(2)?,
+                content: row.get(3)?,
+                attachment_hash: row.get(4)?,
+                attachment_name: row.get(5)?,
+                timestamp: row.get(6)?,
+                delivered: row.get(7)?,
             })
         })?;
 
         let mut messages = Vec::new();
-        for msg in msg_iter {
+        for msg in rows {
             messages.push(msg?);
         }
         Ok(messages)
     }
 
-    pub fn remove_queued_message(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM queued_messages WHERE id = ?1", params![id])?;
+    pub fn delete_message(&self, message_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
         Ok(())
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_profile_crud() {
+        let db = Database::new_in_memory().expect("db init failed");
+        assert!(db.get_local_profile().unwrap().is_none());
+
+        let profile = LocalProfile {
+            node_id: "test_node_id_1234".to_string(),
+            secret_key_bytes: vec![1u8; 32],
+            nickname: "Alice".to_string(),
+            avatar_hash: Some("hash123".to_string()),
+        };
+
+        db.save_local_profile(&profile).unwrap();
+        let loaded = db.get_local_profile().unwrap().expect("profile should exist");
+        assert_eq!(loaded.node_id, "test_node_id_1234");
+        assert_eq!(loaded.nickname, "Alice");
+        assert_eq!(loaded.avatar_hash, Some("hash123".to_string()));
+
+        db.update_profile("Alice_Updated", None).unwrap();
+        let updated = db.get_local_profile().unwrap().unwrap();
+        assert_eq!(updated.nickname, "Alice_Updated");
+        assert_eq!(updated.avatar_hash, None);
+    }
+
+    #[test]
+    fn test_contacts_crud() {
+        let db = Database::new_in_memory().expect("db init failed");
+        let contact = Contact {
+            node_id: "peer_node_abc".to_string(),
+            nickname: "Bob".to_string(),
+            avatar_path: None,
+            custom_volume: 1.0,
+            last_seen: 12345678,
+        };
+
+        db.insert_or_update_contact(&contact).unwrap();
+        let contacts = db.get_contacts().unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].nickname, "Bob");
+
+        db.update_contact_volume("peer_node_abc", 1.5).unwrap();
+        let updated = db.get_contact("peer_node_abc").unwrap().unwrap();
+        assert_eq!(updated.custom_volume, 1.5);
+
+        db.delete_contact("peer_node_abc").unwrap();
+        assert!(db.get_contact("peer_node_abc").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_messages_crud_and_undelivered() {
+        let db = Database::new_in_memory().expect("db init failed");
+        let msg1 = Message {
+            id: "msg_1".to_string(),
+            chat_id: "peer_target".to_string(),
+            sender_id: "my_node".to_string(),
+            content: "Hello!".to_string(),
+            attachment_hash: None,
+            attachment_name: None,
+            timestamp: 100,
+            delivered: 0,
+        };
+        let msg2 = Message {
+            id: "msg_2".to_string(),
+            chat_id: "peer_target".to_string(),
+            sender_id: "my_node".to_string(),
+            content: "Are you there?".to_string(),
+            attachment_hash: None,
+            attachment_name: None,
+            timestamp: 200,
+            delivered: 0,
+        };
+
+        db.insert_message(&msg1).unwrap();
+        db.insert_message(&msg2).unwrap();
+
+        let undelivered = db.get_undelivered_messages("peer_target").unwrap();
+        assert_eq!(undelivered.len(), 2);
+
+        db.mark_message_delivered("msg_1").unwrap();
+        let remaining_undelivered = db.get_undelivered_messages("peer_target").unwrap();
+        assert_eq!(remaining_undelivered.len(), 1);
+        assert_eq!(remaining_undelivered[0].id, "msg_2");
     }
 }
