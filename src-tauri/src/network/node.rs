@@ -14,11 +14,43 @@ use iroh_blobs::{store::mem::MemStore, BlobsProtocol};
 use iroh_gossip::net::Gossip;
 
 pub use crate::network::file_transfer::DM_ALPN;
+pub use crate::network::room::{AudioProtocolHandler, AUDIO_ALPN};
 use crate::network::device_sync::{DynamicSyncHandler, SYNC_ALPN};
 use crate::network::file_transfer::{DirectMessageHandler, DIRECT_MESSAGE_ALPN};
 use crate::network::vpn_bypass::detect_default_physical_interface;
 use crate::storage::db::Database;
 use crate::storage::models::{Contact, LocalProfile};
+
+#[derive(Clone, Default)]
+pub struct DynamicAudioHandler {
+    inner: Arc<RwLock<Option<AudioProtocolHandler>>>,
+}
+
+impl std::fmt::Debug for DynamicAudioHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DynamicAudioHandler")
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for DynamicAudioHandler {
+    fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> impl std::future::Future<Output = Result<(), iroh::protocol::AcceptError>> + Send {
+        let inner = self.inner.clone();
+        async move {
+            let handler_opt = {
+                let guard = inner.read().await;
+                guard.clone()
+            };
+            if let Some(handler) = handler_opt {
+                handler.accept(connection).await
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct DynamicDmHandler {
@@ -84,6 +116,7 @@ pub struct InnerNodeState {
     pub blobs_store: Option<MemStore>,
     pub dm_handler: DynamicDmHandler,
     pub sync_handler: DynamicSyncHandler,
+    pub audio_handler: DynamicAudioHandler,
     pub memory_lookup: MemoryLookup,
     pub secret_key: SecretKey,
     pub profile: LocalProfile,
@@ -111,6 +144,7 @@ impl NodeManager {
             blobs_store: None,
             dm_handler: DynamicDmHandler::default(),
             sync_handler: sync_handler.clone(),
+            audio_handler: DynamicAudioHandler::default(),
             memory_lookup: MemoryLookup::new(),
             secret_key,
             profile,
@@ -194,12 +228,13 @@ impl NodeManager {
         // Initialize iroh-gossip protocol
         let gossip = Gossip::builder().spawn(endpoint.clone());
 
-        // Spawn ALPN router for accepting blobs, gossip, direct messages, and device sync
+        // Spawn ALPN router for accepting blobs, gossip, direct messages, device sync, and audio datagrams
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs)
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(DIRECT_MESSAGE_ALPN, state.dm_handler.clone())
             .accept(SYNC_ALPN, state.sync_handler.clone())
+            .accept(AUDIO_ALPN, state.audio_handler.clone())
             .spawn();
 
         state.endpoint = Some(endpoint);
@@ -250,6 +285,7 @@ impl NodeManager {
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(DIRECT_MESSAGE_ALPN, state.dm_handler.clone())
             .accept(SYNC_ALPN, state.sync_handler.clone())
+            .accept(AUDIO_ALPN, state.audio_handler.clone())
             .spawn();
 
         state.endpoint = Some(endpoint);
@@ -259,6 +295,11 @@ impl NodeManager {
         state.status = NodeStatus::Running;
 
         Ok(new_profile.into())
+    }
+
+    pub async fn set_audio_handler(&self, handler: AudioProtocolHandler) {
+        let state = self.state.read().await;
+        *state.audio_handler.inner.write().await = Some(handler);
     }
 
     pub async fn set_dm_handler(&self, handler: DirectMessageHandler) {

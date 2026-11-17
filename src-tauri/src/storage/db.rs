@@ -143,12 +143,35 @@ impl Database {
             .as_secs() as i64;
 
         let existing = self.get_contact(peer_node_id)?;
-        let custom_volume = existing.map(|c| c.custom_volume).unwrap_or(1.0);
+        let custom_volume = existing.as_ref().map(|c| c.custom_volume).unwrap_or(1.0);
+
+        let final_nickname = if nickname.trim().is_empty() {
+            if let Some(ref ex) = existing {
+                ex.nickname.clone()
+            } else {
+                let short_id = if peer_node_id.len() >= 4 {
+                    &peer_node_id[..4]
+                } else {
+                    peer_node_id
+                };
+                format!("Peer_{}", short_id)
+            }
+        } else {
+            nickname.trim().to_string()
+        };
+
+        let final_avatar = if avatar_hash.is_some() {
+            avatar_hash.map(|s| s.to_string())
+        } else if let Some(ref ex) = existing {
+            ex.avatar_path.clone()
+        } else {
+            None
+        };
 
         let contact = Contact {
             node_id: peer_node_id.to_string(),
-            nickname: nickname.to_string(),
-            avatar_path: avatar_hash.map(|s| s.to_string()),
+            nickname: final_nickname,
+            avatar_path: final_avatar,
             custom_volume,
             last_seen: now,
         };
@@ -487,5 +510,12 @@ mod tests {
         assert_eq!(updated.nickname, "Charlie_Renamed");
         assert_eq!(updated.avatar_path, Some("hash_avatar_2".to_string()));
         assert_eq!(updated.custom_volume, 1.8);
+
+        // Handshake with empty nickname should preserve Charlie_Renamed
+        let empty_nick = db
+            .handle_profile_handshake("peer_handshake_1", "", Some("hash_avatar_3"))
+            .unwrap();
+        assert_eq!(empty_nick.nickname, "Charlie_Renamed");
+        assert_eq!(empty_nick.avatar_path, Some("hash_avatar_3".to_string()));
     }
 }

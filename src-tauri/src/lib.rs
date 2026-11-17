@@ -116,6 +116,20 @@ pub fn run() {
                 nm_dm.set_dm_handler(dm_handler).await;
             });
 
+            // Register Audio handler on node manager
+            let audio_handler = room_manager.create_audio_handler();
+            let nm_audio_h = node_manager.clone();
+            tauri::async_runtime::spawn(async move {
+                nm_audio_h.set_audio_handler(audio_handler).await;
+            });
+
+            // Provide audio_manager to room_manager
+            let rm_audio = room_manager.clone();
+            let am_ref = audio_manager.clone();
+            tauri::async_runtime::spawn(async move {
+                rm_audio.set_audio_manager(am_ref).await;
+            });
+
             // Wire avatar handshake caching to room manager
             let rm_avatar = room_manager.clone();
             let ft_avatar = ft_manager.clone();

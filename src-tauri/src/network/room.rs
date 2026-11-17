@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -8,14 +9,18 @@ use serde::{Deserialize, Serialize};
 use bytes::Bytes;
 use futures::StreamExt;
 use base64::Engine;
-use iroh::{PublicKey, SecretKey, Signature};
+use iroh::endpoint::Connection;
+use iroh::{EndpointAddr, PublicKey, SecretKey, Signature};
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::proto::TopicId;
 
+use crate::audio::{AudioManager, AudioPacketSender};
 use crate::ipc::events::{HostChangedPayload, EVENT_HOST_CHANGED, EVENT_PEERS_UPDATED};
 use crate::network::node::{NodeAddr, NodeManager};
 use crate::storage::db::Database;
 use crate::storage::models::{Contact, Message};
+
+pub const AUDIO_ALPN: &[u8] = b"/p2pchat/audio/1";
 
 // ============================================================================
 // 0. Room Ticket (Compound Bootstrap Structure)
@@ -107,6 +112,8 @@ pub struct HeartbeatMessage {
     pub host_id: String,
     pub timestamp: u64,
     pub peer_list: Vec<String>,
+    #[serde(default)]
+    pub peers: Vec<PeerInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,6 +149,8 @@ pub enum RoomGossipMessage {
         host_id: String,
         timestamp: u64,
         peer_list: Vec<String>,
+        #[serde(default)]
+        peers: Vec<PeerInfo>,
     },
     TransferHost {
         new_host_id: String,
@@ -346,6 +355,7 @@ pub type HostChangedCallback = Arc<dyn Fn(&HostChangedPayload) + Send + Sync>;
 pub type ChatMessageCallback = Arc<dyn Fn(&Message) + Send + Sync>;
 pub type PeersUpdatedCallback = Arc<dyn Fn(&RoomState) + Send + Sync>;
 pub type AvatarHandshakeCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
+pub type PeerJoinedCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 pub struct RoomSession {
     pub room_id: String,
@@ -361,6 +371,7 @@ pub struct RoomSession {
     pub host_changed_cb: Option<HostChangedCallback>,
     pub chat_message_cb: Option<ChatMessageCallback>,
     pub peers_updated_cb: Option<PeersUpdatedCallback>,
+    pub peer_joined_cb: Option<PeerJoinedCallback>,
     pub avatar_cb: Arc<RwLock<Option<AvatarHandshakeCallback>>>,
     pub gossip_sender: Arc<Mutex<Option<GossipSender>>>,
     pub join_timestamp: u64,
@@ -381,7 +392,7 @@ impl RoomSession {
         host_changed_cb: Option<HostChangedCallback>,
         chat_message_cb: Option<ChatMessageCallback>,
     ) -> Arc<Self> {
-        Self::with_callbacks(
+        Self::with_all_callbacks(
             room_id,
             local_node_id,
             secret_key,
@@ -389,6 +400,7 @@ impl RoomSession {
             db,
             host_changed_cb,
             chat_message_cb,
+            None,
             None,
         )
     }
@@ -402,6 +414,30 @@ impl RoomSession {
         host_changed_cb: Option<HostChangedCallback>,
         chat_message_cb: Option<ChatMessageCallback>,
         peers_updated_cb: Option<PeersUpdatedCallback>,
+    ) -> Arc<Self> {
+        Self::with_all_callbacks(
+            room_id,
+            local_node_id,
+            secret_key,
+            initial_host_id,
+            db,
+            host_changed_cb,
+            chat_message_cb,
+            peers_updated_cb,
+            None,
+        )
+    }
+
+    pub fn with_all_callbacks(
+        room_id: String,
+        local_node_id: String,
+        secret_key: SecretKey,
+        initial_host_id: String,
+        db: Database,
+        host_changed_cb: Option<HostChangedCallback>,
+        chat_message_cb: Option<ChatMessageCallback>,
+        peers_updated_cb: Option<PeersUpdatedCallback>,
+        peer_joined_cb: Option<PeerJoinedCallback>,
     ) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(256);
         let (forwarded_datagram_tx, _) = broadcast::channel(1024);
@@ -432,6 +468,7 @@ impl RoomSession {
             host_changed_cb: host_changed_cb.clone(),
             chat_message_cb,
             peers_updated_cb: peers_updated_cb.clone(),
+            peer_joined_cb,
             avatar_cb: Arc::new(RwLock::new(None)),
             gossip_sender: gossip_sender.clone(),
             join_timestamp,
@@ -508,10 +545,16 @@ impl RoomSession {
                                 .unwrap_or_default()
                                 .as_millis() as u64;
 
+                            let peers_snapshot = {
+                                let st = state.read().await;
+                                st.peers.clone()
+                            };
+
                             let heartbeat = RoomGossipMessage::Heartbeat {
                                 host_id: local_node_id.clone(),
                                 timestamp,
                                 peer_list: peer_ids,
+                                peers: peers_snapshot,
                             };
                             let _ = broadcast_tx.send(heartbeat.clone());
                             if let Some(ref sender) = *gossip_sender.lock().await {
@@ -559,6 +602,7 @@ impl RoomSession {
                                         host_id: local_node_id.clone(),
                                         timestamp,
                                         peer_list: updated_peers,
+                                        peers: st_clone.peers.clone(),
                                     };
                                     let _ = broadcast_tx.send(heartbeat.clone());
                                     if let Some(ref sender) = *gossip_sender.lock().await {
@@ -786,15 +830,55 @@ impl RoomSession {
                     };
                     let _ = self.broadcast_gossip(my_state).await;
                 }
+
+                if let Some(ref cb) = self.peer_joined_cb {
+                    cb(&node_id);
+                }
             }
             RoomGossipMessage::Heartbeat {
                 host_id,
                 timestamp: _,
                 peer_list: _,
+                peers,
             } => {
-                let state = self.state.read().await;
-                if host_id == state.host_node_id {
-                    *self.last_heartbeat_received.write().await = Instant::now();
+                let mut updated = false;
+                let mut new_peers = Vec::new();
+                let st_clone = {
+                    let mut state = self.state.write().await;
+                    if host_id == state.host_node_id {
+                        *self.last_heartbeat_received.write().await = Instant::now();
+                    }
+                    for p in peers {
+                        if p.node_id != self.local_node_id {
+                            let existing = state.peers.iter_mut().find(|ep| ep.node_id == p.node_id);
+                            if let Some(existing_peer) = existing {
+                                if existing_peer.is_host != p.is_host
+                                    || existing_peer.nickname != p.nickname
+                                    || existing_peer.is_muted != p.is_muted
+                                    || existing_peer.is_deafened != p.is_deafened
+                                {
+                                    *existing_peer = p;
+                                    updated = true;
+                                }
+                            } else {
+                                new_peers.push(p.node_id.clone());
+                                state.peers.push(p);
+                                updated = true;
+                            }
+                        }
+                    }
+                    if updated {
+                        state.sort_peers();
+                    }
+                    state.clone()
+                };
+                if updated {
+                    Self::emit_peers_updated(&self.peers_updated_cb, &st_clone);
+                    if let Some(ref cb) = self.peer_joined_cb {
+                        for nid in new_peers {
+                            cb(&nid);
+                        }
+                    }
                 }
             }
             RoomGossipMessage::TransferHost {
@@ -1085,15 +1169,38 @@ impl Drop for RoomSession {
 }
 
 // ============================================================================
-// 5. Room Manager
+// 5. Room Manager & Audio Protocol Handler
 // ============================================================================
 
 #[derive(Clone)]
-pub struct RoomManager {
-    pub node_manager: Option<NodeManager>,
-    inner: Arc<RwLock<RoomManagerInner>>,
-    db: Database,
-    app_handle: Option<tauri::AppHandle>,
+pub struct AudioProtocolHandler {
+    room_manager: RoomManager,
+}
+
+impl AudioProtocolHandler {
+    pub fn new(room_manager: RoomManager) -> Self {
+        Self { room_manager }
+    }
+}
+
+impl std::fmt::Debug for AudioProtocolHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AudioProtocolHandler")
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for AudioProtocolHandler {
+    fn accept(
+        &self,
+        connection: Connection,
+    ) -> impl std::future::Future<Output = Result<(), iroh::protocol::AcceptError>> + Send {
+        let rm = self.room_manager.clone();
+        async move {
+            let remote_id = connection.remote_id().to_string();
+            rm.register_audio_connection(remote_id, connection).await;
+            Ok(())
+        }
+    }
 }
 
 struct RoomManagerInner {
@@ -1101,6 +1208,19 @@ struct RoomManagerInner {
     pub local_node_id: String,
     pub secret_key: SecretKey,
     pub avatar_cb: Option<AvatarHandshakeCallback>,
+    pub audio_manager: Option<Arc<AudioManager>>,
+}
+
+#[derive(Clone)]
+pub struct RoomManager {
+    pub node_manager: Option<NodeManager>,
+    inner: Arc<RwLock<RoomManagerInner>>,
+    audio_connections: Arc<RwLock<HashMap<String, Connection>>>,
+    sent_audio_packets: Arc<AtomicU64>,
+    recv_audio_packets: Arc<AtomicU64>,
+    last_audio_log: Arc<RwLock<Instant>>,
+    db: Database,
+    app_handle: Option<tauri::AppHandle>,
 }
 
 impl RoomManager {
@@ -1117,11 +1237,16 @@ impl RoomManager {
             local_node_id,
             secret_key,
             avatar_cb: None,
+            audio_manager: None,
         }));
 
         let mgr = Self {
             node_manager: Some(node_manager.clone()),
             inner: inner.clone(),
+            audio_connections: Arc::new(RwLock::new(HashMap::new())),
+            sent_audio_packets: Arc::new(AtomicU64::new(0)),
+            recv_audio_packets: Arc::new(AtomicU64::new(0)),
+            last_audio_log: Arc::new(RwLock::new(Instant::now())),
             db,
             app_handle,
         };
@@ -1157,13 +1282,169 @@ impl RoomManager {
             local_node_id,
             secret_key,
             avatar_cb: None,
+            audio_manager: None,
         }));
 
         Self {
             node_manager: None,
             inner,
+            audio_connections: Arc::new(RwLock::new(HashMap::new())),
+            sent_audio_packets: Arc::new(AtomicU64::new(0)),
+            recv_audio_packets: Arc::new(AtomicU64::new(0)),
+            last_audio_log: Arc::new(RwLock::new(Instant::now())),
             db,
             app_handle,
+        }
+    }
+
+    pub fn create_audio_handler(&self) -> AudioProtocolHandler {
+        AudioProtocolHandler::new(self.clone())
+    }
+
+    pub async fn set_audio_manager(&self, am: Arc<AudioManager>) {
+        let mut inner = self.inner.write().await;
+        inner.audio_manager = Some(am);
+    }
+
+    pub async fn get_audio_manager(&self) -> Option<Arc<AudioManager>> {
+        let inner = self.inner.read().await;
+        inner.audio_manager.clone()
+    }
+
+    pub async fn get_local_node_id(&self) -> String {
+        let inner = self.inner.read().await;
+        inner.local_node_id.clone()
+    }
+
+    pub async fn register_audio_connection(&self, node_id: String, connection: Connection) {
+        {
+            let mut conns = self.audio_connections.write().await;
+            conns.insert(node_id.clone(), connection.clone());
+        }
+
+        let rm = self.clone();
+        let nid = node_id.clone();
+        tokio::spawn(async move {
+            while let Ok(dgram) = connection.read_datagram().await {
+                rm.handle_incoming_audio_datagram(&nid, &dgram).await;
+            }
+            rm.remove_audio_connection(&nid).await;
+        });
+    }
+
+    pub async fn remove_audio_connection(&self, node_id: &str) {
+        let mut conns = self.audio_connections.write().await;
+        conns.remove(node_id);
+    }
+
+    pub async fn handle_incoming_audio_datagram(&self, sender_id: &str, raw_data: &[u8]) {
+        self.recv_audio_packets.fetch_add(1, Ordering::Relaxed);
+        self.log_audio_stats_if_needed().await;
+
+        let room = match self.get_current_room().await {
+            Some(r) => r,
+            None => return,
+        };
+
+        match room.handle_incoming_datagram(sender_id, raw_data).await {
+            Ok(Some(packet)) => {
+                if let Some(ref am) = self.get_audio_manager().await {
+                    let _ = am.handle_incoming_audio_packet(&packet);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("[Audio] Error decoding datagram from {sender_id}: {e}");
+            }
+        }
+    }
+
+    pub async fn broadcast_audio(&self, seq: u64, opus_data: Vec<u8>) {
+        let room = match self.get_current_room().await {
+            Some(r) => r,
+            None => return,
+        };
+
+        let datagrams = room.broadcast_audio_frame(seq, &opus_data).await;
+        if datagrams.is_empty() {
+            return;
+        }
+
+        self.sent_audio_packets.fetch_add(1, Ordering::Relaxed);
+        self.log_audio_stats_if_needed().await;
+
+        let conns = self.audio_connections.read().await;
+        for (dest_id, bytes) in datagrams {
+            if let Some(conn) = conns.get(&dest_id) {
+                let _ = conn.send_datagram(Bytes::from(bytes));
+            }
+        }
+    }
+
+    pub async fn log_audio_stats_if_needed(&self) {
+        let now = Instant::now();
+        let should_log = {
+            let last = self.last_audio_log.read().await;
+            now.duration_since(*last) >= Duration::from_secs(3)
+        };
+
+        if should_log {
+            let mut last = self.last_audio_log.write().await;
+            if now.duration_since(*last) >= Duration::from_secs(3) {
+                *last = now;
+                let sent = self.sent_audio_packets.load(Ordering::Relaxed);
+                let recv = self.recv_audio_packets.load(Ordering::Relaxed);
+                if sent > 0 || recv > 0 {
+                    println!("[Audio Stats] Sent: {} packets | Received: {} packets", sent, recv);
+                }
+            }
+        }
+    }
+
+    pub async fn connect_peer_audio(&self, peer_node_id: &str) {
+        if peer_node_id == self.get_local_node_id().await {
+            return;
+        }
+
+        {
+            let conns = self.audio_connections.read().await;
+            if conns.contains_key(peer_node_id) {
+                return;
+            }
+        }
+
+        let endpoint = match self.node_manager.as_ref() {
+            Some(nm) => match nm.get_endpoint().await {
+                Some(ep) => ep,
+                None => return,
+            },
+            None => return,
+        };
+
+        let target_pk = match PublicKey::from_str(peer_node_id) {
+            Ok(pk) => pk,
+            Err(_) => return,
+        };
+
+        let addr = EndpointAddr::new(target_pk);
+        let connect_res = tokio::time::timeout(
+            Duration::from_millis(3000),
+            endpoint.connect(addr, AUDIO_ALPN),
+        )
+        .await;
+
+        match connect_res {
+            Ok(Ok(connection)) => {
+                self.register_audio_connection(peer_node_id.to_string(), connection).await;
+                if let Some(room) = self.get_current_room().await {
+                    room.set_peer_relay_fallback(peer_node_id, false).await;
+                }
+            }
+            _ => {
+                if let Some(room) = self.get_current_room().await {
+                    room.set_peer_relay_fallback(peer_node_id, true).await;
+                }
+            }
         }
     }
 
@@ -1280,7 +1561,16 @@ impl RoomManager {
             cb
         });
 
-        let session = RoomSession::with_callbacks(
+        let rm_for_peer = self.clone();
+        let peer_joined_cb: PeerJoinedCallback = Arc::new(move |peer_id: &str| {
+            let rm = rm_for_peer.clone();
+            let pid = peer_id.to_string();
+            tokio::spawn(async move {
+                rm.connect_peer_audio(&pid).await;
+            });
+        });
+
+        let session = RoomSession::with_all_callbacks(
             room_id.clone(),
             inner.local_node_id.clone(),
             inner.secret_key.clone(),
@@ -1289,6 +1579,7 @@ impl RoomManager {
             host_changed_cb,
             chat_message_cb,
             peers_updated_cb.clone(),
+            Some(peer_joined_cb),
         );
 
         if let Some(s) = gossip_sender {
@@ -1328,20 +1619,92 @@ impl RoomManager {
                 is_muted: false,
                 is_deafened: false,
             });
+
+            if !is_me_host {
+                let host_contact = self.db.get_contact(&effective_host_id).ok().flatten();
+                let host_nickname = host_contact
+                    .as_ref()
+                    .map(|c| c.nickname.clone())
+                    .unwrap_or_else(|| {
+                        let s = if effective_host_id.len() >= 4 {
+                            &effective_host_id[..4]
+                        } else {
+                            &effective_host_id
+                        };
+                        format!("Host_{}", s)
+                    });
+                let host_avatar = host_contact.and_then(|c| c.avatar_path);
+
+                st.add_or_update_peer(PeerInfo {
+                    node_id: effective_host_id.clone(),
+                    nickname: host_nickname,
+                    avatar_hash: host_avatar,
+                    join_timestamp: now_ts.saturating_sub(1000),
+                    is_host: true,
+                    is_muted: false,
+                    is_deafened: false,
+                });
+            }
         }
 
-        // Emit peers updated immediately so UI shows the 1 user right away
+        // Emit peers updated immediately so UI shows both host and joiner right away
         {
             let st = session.state.read().await;
             RoomSession::emit_peers_updated(&peers_updated_cb, &st);
         }
+
+        // Wire packet sender from audio manager if available
+        if let Some(ref am) = inner.audio_manager {
+            let rm_sender = self.clone();
+            let packet_sender: AudioPacketSender = Arc::new(move |seq, opus_data| {
+                let rm = rm_sender.clone();
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        rm.broadcast_audio(seq, opus_data).await;
+                    });
+                } else {
+                    tauri::async_runtime::spawn(async move {
+                        rm.broadcast_audio(seq, opus_data).await;
+                    });
+                }
+            });
+            am.set_packet_sender(Some(packet_sender));
+        }
+
+        // Host forwarding loop for relayed datagrams
+        let mut fwd_rx = session.forwarded_datagram_tx.subscribe();
+        let conns_ref = self.audio_connections.clone();
+        tokio::spawn(async move {
+            while let Ok((target_id, payload)) = fwd_rx.recv().await {
+                let conn_opt = {
+                    let conns = conns_ref.read().await;
+                    conns.get(&target_id).cloned()
+                };
+                if let Some(conn) = conn_opt {
+                    let _ = conn.send_datagram(Bytes::from(payload));
+                }
+            }
+        });
+
+        // Connect peer audio in the background for host and bootstrap nodes
+        let rm_conn = self.clone();
+        let eff_host = effective_host_id.clone();
+        let boot_nodes = bootstrap_nodes.clone();
+        tokio::spawn(async move {
+            if eff_host != rm_conn.get_local_node_id().await {
+                rm_conn.connect_peer_audio(&eff_host).await;
+            }
+            for node_addr in boot_nodes {
+                rm_conn.connect_peer_audio(&node_addr.id.to_string()).await;
+            }
+        });
 
         // Attach gossip receiver loop if available
         if let Some(recv) = gossip_receiver {
             session.attach_gossip_receiver(recv);
         }
 
-        // Broadcast PeerJoined over gossip
+        // Broadcast PeerJoined over gossip (retry 3 times with 500ms intervals)
         let peer_joined_msg = RoomGossipMessage::PeerJoined {
             node_id: inner.local_node_id.clone(),
             nickname,
@@ -1350,7 +1713,12 @@ impl RoomManager {
         };
         let s_clone = session.clone();
         tokio::spawn(async move {
-            s_clone.broadcast_gossip(peer_joined_msg).await.ok();
+            for i in 0..3 {
+                if i > 0 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                let _ = s_clone.broadcast_gossip(peer_joined_msg.clone()).await;
+            }
         });
 
         if let Some(ref cb) = inner.avatar_cb {
@@ -1402,6 +1770,10 @@ impl RoomManager {
     }
 
     pub async fn leave_room(&self) {
+        self.audio_connections.write().await.clear();
+        if let Some(ref am) = self.get_audio_manager().await {
+            am.set_packet_sender(None);
+        }
         let mut inner = self.inner.write().await;
         if let Some(room) = inner.current_room.take() {
             room.close().await;
@@ -1999,6 +2371,82 @@ mod tests {
             }
 
             session.close().await;
+        });
+    }
+
+    #[test]
+    fn test_heartbeat_peers_merging() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let db = Database::new_in_memory().unwrap();
+            let host_sk = SecretKey::generate();
+            let host_id = host_sk.public().to_string();
+            let my_sk = SecretKey::generate();
+            let my_id = my_sk.public().to_string();
+
+            let session = RoomSession::new(
+                "room_merge_test".to_string(),
+                my_id.clone(),
+                my_sk,
+                host_id.clone(),
+                db,
+                None,
+                None,
+            );
+
+            // Heartbeat received from host containing a 3rd peer
+            let peer3 = PeerInfo {
+                node_id: "peer_3_nid".to_string(),
+                nickname: "Charlie".to_string(),
+                avatar_hash: None,
+                join_timestamp: 150,
+                is_host: false,
+                is_muted: false,
+                is_deafened: false,
+            };
+
+            let heartbeat = RoomGossipMessage::Heartbeat {
+                host_id: host_id.clone(),
+                timestamp: 1000,
+                peer_list: vec![host_id.clone(), my_id.clone(), peer3.node_id.clone()],
+                peers: vec![peer3.clone()],
+            };
+
+            session.handle_gossip_message(heartbeat).await.unwrap();
+
+            let st = session.state.read().await;
+            assert!(st.peers.iter().any(|p| p.node_id == "peer_3_nid" && p.nickname == "Charlie"));
+
+            session.close().await;
+        });
+    }
+
+    #[test]
+    fn test_join_room_prepopulates_host() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let db = Database::new_in_memory().unwrap();
+            let my_sk = SecretKey::generate();
+            let my_id = my_sk.public().to_string();
+            let host_sk = SecretKey::generate();
+            let host_id = host_sk.public().to_string();
+
+            let mgr = RoomManager::new_standalone(my_id.clone(), my_sk, db, None);
+            let session = mgr.create_or_join_room("room_prepop", Some(&host_id)).await;
+
+            let st = session.state.read().await;
+            // Both local user AND host should be in state.peers
+            assert_eq!(st.peers.len(), 2);
+            assert!(st.peers.iter().any(|p| p.node_id == my_id && !p.is_host));
+            assert!(st.peers.iter().any(|p| p.node_id == host_id && p.is_host));
+
+            mgr.leave_room().await;
         });
     }
 }

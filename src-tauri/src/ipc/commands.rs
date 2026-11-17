@@ -269,6 +269,7 @@ pub async fn start_direct_call(
     room_manager: State<'_, RoomManager>,
     ft_manager: State<'_, Arc<FileTransferManager>>,
     node_manager: State<'_, NodeManager>,
+    db: State<'_, Database>,
 ) -> Result<RoomState, String> {
     let local_id = node_manager.get_node_id().await;
     let (first, second) = if local_id < recipient_node_id {
@@ -281,10 +282,54 @@ pub async fn start_direct_call(
     let call_room_name = format!("call_{}_{}", short1, short2);
 
     let session = room_manager.create_or_join_room(&call_room_name, None).await;
-    let st = session.state.read().await.clone();
+
+    // Pre-populate recipient peer card immediately
+    let recipient_contact = db.get_contact(&recipient_node_id).ok().flatten();
+    let recipient_nick = recipient_contact
+        .as_ref()
+        .map(|c| c.nickname.clone())
+        .unwrap_or_else(|| {
+            let s = if recipient_node_id.len() >= 4 {
+                &recipient_node_id[..4]
+            } else {
+                &recipient_node_id
+            };
+            format!("Contact_{}", s)
+        });
+    let recipient_avatar = recipient_contact.and_then(|c| c.avatar_path);
+
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let updated_st = {
+        let mut st = session.state.write().await;
+        st.add_or_update_peer(crate::network::room::PeerInfo {
+            node_id: recipient_node_id.clone(),
+            nickname: recipient_nick,
+            avatar_hash: recipient_avatar,
+            join_timestamp: now_ts + 1,
+            is_host: false,
+            is_muted: false,
+            is_deafened: false,
+        });
+        st.clone()
+    };
+
+    if let Some(ref cb) = session.peers_updated_cb {
+        cb(&updated_st);
+    }
+
+    // Connect audio in background
+    let rm = room_manager.inner().clone();
+    let r_id = recipient_node_id.clone();
+    tokio::spawn(async move {
+        rm.connect_peer_audio(&r_id).await;
+    });
 
     // If ticket was generated, send DirectCallRing over DM_ALPN to contact
-    if let Some(ref ticket) = st.ticket {
+    if let Some(ref ticket) = updated_st.ticket {
         let ring = crate::network::file_transfer::DmPayload::DirectCallRing {
             caller_id: local_id.clone(),
             room_ticket: ticket.clone(),
@@ -298,7 +343,7 @@ pub async fn start_direct_call(
             .await;
     }
 
-    Ok(st)
+    Ok(updated_st)
 }
 
 #[tauri::command]

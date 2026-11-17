@@ -245,6 +245,17 @@ impl ProtocolHandler for DirectMessageHandler {
                                     &nickname,
                                     avatar_hash.as_deref(),
                                 );
+
+                                // Reply with our own ProfileHandshake on the same bi-stream
+                                if let Ok(Some(local_profile)) = db.get_local_profile() {
+                                    let resp_handshake = DmPayload::ProfileHandshake {
+                                        node_id: Some(local_profile.node_id),
+                                        nickname: local_profile.nickname,
+                                        avatar_hash: local_profile.avatar_hash,
+                                    };
+                                    let _ = write_framed_payload(&mut send, &resp_handshake).await;
+                                }
+
                                 if let Some(ref hash) = avatar_hash {
                                     let avatar_filename = format!("{hash}.png");
                                     let cache_path =
@@ -588,6 +599,29 @@ impl FileTransferManager {
             Ok(Ok(c)) => c,
             _ => return Err("Contact unreachable".into()),
         };
+
+        // Send two-way ProfileHandshake on a dedicated bi-stream before sending queued messages
+        if let Ok(Some(local_profile)) = self.db.get_local_profile() {
+            if let Ok((mut hs_send, mut hs_recv)) = conn.open_bi().await {
+                let handshake_payload = DmPayload::ProfileHandshake {
+                    node_id: Some(local_profile.node_id),
+                    nickname: local_profile.nickname,
+                    avatar_hash: local_profile.avatar_hash,
+                };
+                if write_framed_payload(&mut hs_send, &handshake_payload).await.is_ok() {
+                    if let Ok(Ok(DmPayload::ProfileHandshake { node_id, nickname, avatar_hash })) =
+                        tokio::time::timeout(Duration::from_millis(2000), read_framed_payload(&mut hs_recv)).await
+                    {
+                        let remote_nid = node_id.unwrap_or_else(|| recipient_node_id.to_string());
+                        let _ = self.db.handle_profile_handshake(&remote_nid, &nickname, avatar_hash.as_deref());
+                        if let Some(ref app) = *self.app_handle.read().await {
+                            use tauri::Emitter;
+                            let _ = app.emit("contacts://updated", ());
+                        }
+                    }
+                }
+            }
+        }
 
         let mut delivered_count = 0;
         for mut msg in messages {
