@@ -93,6 +93,13 @@ pub enum DmPayload {
         caller_id: String,
         room_ticket: String,
     },
+    MessageEdited {
+        message_id: String,
+        new_content: String,
+    },
+    MessageDeleted {
+        message_id: String,
+    },
 }
 
 pub type DirectMessageEnvelope = DmPayload;
@@ -311,6 +318,31 @@ impl ProtocolHandler for DirectMessageHandler {
                                 );
                             }
                         }
+                        DmPayload::MessageEdited { message_id, new_content } => {
+                            let _ = db.edit_message(&message_id, &new_content);
+                            if let Some(ref app) = *app_handle.read().await {
+                                use tauri::Emitter;
+                                let _ = app.emit(
+                                    crate::ipc::events::EVENT_CHAT_MESSAGE_EDITED,
+                                    crate::ipc::events::MessageEditedPayload {
+                                        message_id,
+                                        new_content,
+                                    },
+                                );
+                            }
+                        }
+                        DmPayload::MessageDeleted { message_id } => {
+                            let _ = db.delete_message(&message_id);
+                            if let Some(ref app) = *app_handle.read().await {
+                                use tauri::Emitter;
+                                let _ = app.emit(
+                                    crate::ipc::events::EVENT_CHAT_MESSAGE_DELETED,
+                                    crate::ipc::events::MessageDeletedPayload {
+                                        message_id,
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -461,6 +493,7 @@ impl FileTransferManager {
             attachment_name: Some(filename.clone()),
             timestamp: now,
             delivered: 0,
+            is_edited: 0,
         };
 
         // Save in local SQLite DB
@@ -514,6 +547,7 @@ impl FileTransferManager {
             attachment_name,
             timestamp: now,
             delivered: 0,
+            is_edited: 0,
         };
 
         // Insert into SQLite with delivered = 0
@@ -529,11 +563,11 @@ impl FileTransferManager {
         Ok(msg)
     }
 
-    /// Sends a direct call ring request over `DM_ALPN` to initiate a private 1-on-1 call.
-    pub async fn send_direct_call_ring(
+    /// Sends a direct control payload (e.g. MessageEdited, MessageDeleted, DirectCallRing) over `DM_ALPN`.
+    pub async fn send_dm_payload(
         &self,
         recipient_node_id: &str,
-        ring: DmPayload,
+        payload: DmPayload,
     ) -> Result<(), String> {
         let endpoint = match &*self.endpoint.read().await {
             Some(ep) => ep.clone(),
@@ -552,10 +586,19 @@ impl FileTransferManager {
         .map_err(|e| format!("Failed to connect to peer: {e}"))?;
 
         let (mut send, _recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
-        write_framed_payload(&mut send, &ring)
+        write_framed_payload(&mut send, &payload)
             .await
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Sends a direct call ring request over `DM_ALPN` to initiate a private 1-on-1 call.
+    pub async fn send_direct_call_ring(
+        &self,
+        recipient_node_id: &str,
+        ring: DmPayload,
+    ) -> Result<(), String> {
+        self.send_dm_payload(recipient_node_id, ring).await
     }
 
     /// Flushes any pending offline messages queued for `recipient_node_id`.
@@ -1216,6 +1259,7 @@ mod tests {
             attachment_name: None,
             timestamp: 200,
             delivered: 1,
+            is_edited: 0,
         };
         db.insert_message(&msg).unwrap();
 

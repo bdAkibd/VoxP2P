@@ -60,10 +60,12 @@ impl Database {
                 attachment_hash TEXT,
                 attachment_name TEXT,
                 timestamp INTEGER NOT NULL,
-                delivered INTEGER DEFAULT 0
+                delivered INTEGER DEFAULT 0,
+                is_edited INTEGER DEFAULT 0
             )",
             [],
         )?;
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN is_edited INTEGER DEFAULT 0", []);
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS app_settings (
@@ -263,8 +265,8 @@ impl Database {
     pub fn insert_message(&self, message: &Message) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO messages (id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO messages (id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 message.id,
                 message.chat_id,
@@ -273,7 +275,8 @@ impl Database {
                 message.attachment_hash,
                 message.attachment_name,
                 message.timestamp,
-                message.delivered
+                message.delivered,
+                message.is_edited
             ],
         )?;
         Ok(())
@@ -282,7 +285,7 @@ impl Database {
     pub fn get_messages_for_chat(&self, chat_id: &str, limit: usize) -> Result<Vec<Message>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited
              FROM messages
              WHERE chat_id = ?1
              ORDER BY timestamp ASC
@@ -298,6 +301,7 @@ impl Database {
                 attachment_name: row.get(5)?,
                 timestamp: row.get(6)?,
                 delivered: row.get(7)?,
+                is_edited: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
             })
         })?;
 
@@ -306,6 +310,40 @@ impl Database {
             messages.push(msg?);
         }
         Ok(messages)
+    }
+
+    pub fn get_message(&self, message_id: &str) -> Result<Option<Message>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited
+             FROM messages
+             WHERE id = ?1",
+        )?;
+        let msg = stmt
+            .query_row(params![message_id], |row| {
+                Ok(Message {
+                    id: row.get(0)?,
+                    chat_id: row.get(1)?,
+                    sender_id: row.get(2)?,
+                    content: row.get(3)?,
+                    attachment_hash: row.get(4)?,
+                    attachment_name: row.get(5)?,
+                    timestamp: row.get(6)?,
+                    delivered: row.get(7)?,
+                    is_edited: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
+                })
+            })
+            .optional()?;
+        Ok(msg)
+    }
+
+    pub fn edit_message(&self, message_id: &str, new_content: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET content = ?1, is_edited = 1 WHERE id = ?2",
+            params![new_content, message_id],
+        )?;
+        Ok(())
     }
 
     pub fn mark_message_delivered(&self, message_id: &str) -> Result<()> {
@@ -321,7 +359,7 @@ impl Database {
     pub fn get_all_messages(&self) -> Result<Vec<Message>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited
              FROM messages
              ORDER BY timestamp ASC",
         )?;
@@ -335,6 +373,7 @@ impl Database {
                 attachment_name: row.get(5)?,
                 timestamp: row.get(6)?,
                 delivered: row.get(7)?,
+                is_edited: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
             })
         })?;
 
@@ -349,7 +388,7 @@ impl Database {
     pub fn get_all_undelivered_messages(&self) -> Result<Vec<Message>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited
              FROM messages
              WHERE delivered = 0
              ORDER BY timestamp ASC",
@@ -364,6 +403,7 @@ impl Database {
                 attachment_name: row.get(5)?,
                 timestamp: row.get(6)?,
                 delivered: row.get(7)?,
+                is_edited: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
             })
         })?;
 
@@ -378,7 +418,7 @@ impl Database {
     pub fn get_undelivered_messages(&self, node_id: &str) -> Result<Vec<Message>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
+            "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited
              FROM messages
              WHERE delivered = 0 AND chat_id = ?1
              ORDER BY timestamp ASC",
@@ -393,6 +433,7 @@ impl Database {
                 attachment_name: row.get(5)?,
                 timestamp: row.get(6)?,
                 delivered: row.get(7)?,
+                is_edited: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
             })
         })?;
 
@@ -510,6 +551,7 @@ mod tests {
             attachment_name: None,
             timestamp: 100,
             delivered: 0,
+            is_edited: 0,
         };
         let msg2 = Message {
             id: "msg_2".to_string(),
@@ -520,6 +562,7 @@ mod tests {
             attachment_name: None,
             timestamp: 200,
             delivered: 0,
+            is_edited: 0,
         };
 
         db.insert_message(&msg1).unwrap();
@@ -532,6 +575,16 @@ mod tests {
         let remaining_undelivered = db.get_undelivered_messages("peer_target").unwrap();
         assert_eq!(remaining_undelivered.len(), 1);
         assert_eq!(remaining_undelivered[0].id, "msg_2");
+
+        // Test edit_message and get_message
+        db.edit_message("msg_1", "Hello Edited!").unwrap();
+        let fetched = db.get_message("msg_1").unwrap().expect("msg_1 not found");
+        assert_eq!(fetched.content, "Hello Edited!");
+        assert_eq!(fetched.is_edited, 1);
+
+        // Test delete_message
+        db.delete_message("msg_1").unwrap();
+        assert!(db.get_message("msg_1").unwrap().is_none());
     }
 
     #[test]

@@ -473,6 +473,122 @@ pub fn get_messages(
 }
 
 #[tauri::command]
+pub async fn edit_message(
+    message_id: String,
+    new_content: String,
+    db: State<'_, Database>,
+    room_manager: State<'_, RoomManager>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let msg = db
+        .get_message(&message_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Message not found".to_string())?;
+
+    db.edit_message(&message_id, &new_content)
+        .map_err(|e| e.to_string())?;
+
+    use tauri::Emitter;
+    let _ = app_handle.emit(
+        crate::ipc::events::EVENT_CHAT_MESSAGE_EDITED,
+        crate::ipc::events::MessageEditedPayload {
+            message_id: message_id.clone(),
+            new_content: new_content.clone(),
+        },
+    );
+
+    // If chat_id matches active room, broadcast gossip
+    let current_room_opt = room_manager.get_current_room().await;
+    if let Some(room) = current_room_opt {
+        if room.room_id == msg.chat_id {
+            let gossip_msg = RoomGossipMessage::MessageEdited {
+                message_id,
+                new_content,
+            };
+            let _ = room.broadcast_gossip(gossip_msg).await;
+            return Ok(());
+        }
+    }
+
+    // Otherwise send DmPayload::MessageEdited over DM_ALPN
+    let recipient_id = if msg.sender_id == msg.chat_id {
+        msg.sender_id
+    } else {
+        msg.chat_id
+    };
+    let payload = crate::network::file_transfer::DmPayload::MessageEdited {
+        message_id,
+        new_content,
+    };
+    let _ = ft_manager.send_dm_payload(&recipient_id, payload).await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_message(
+    message_id: String,
+    for_everyone: Option<bool>,
+    db: State<'_, Database>,
+    room_manager: State<'_, RoomManager>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let for_everyone = for_everyone.unwrap_or(false);
+    let msg_opt = db.get_message(&message_id).map_err(|e| e.to_string())?;
+
+    db.delete_message(&message_id).map_err(|e| e.to_string())?;
+
+    use tauri::Emitter;
+    let _ = app_handle.emit(
+        crate::ipc::events::EVENT_CHAT_MESSAGE_DELETED,
+        crate::ipc::events::MessageDeletedPayload {
+            message_id: message_id.clone(),
+        },
+    );
+
+    if for_everyone {
+        if let Some(msg) = msg_opt {
+            let current_room_opt = room_manager.get_current_room().await;
+            if let Some(room) = current_room_opt {
+                if room.room_id == msg.chat_id {
+                    let gossip_msg = RoomGossipMessage::MessageDeleted {
+                        message_id,
+                    };
+                    let _ = room.broadcast_gossip(gossip_msg).await;
+                    return Ok(());
+                }
+            }
+
+            let recipient_id = if msg.sender_id == msg.chat_id {
+                msg.sender_id
+            } else {
+                msg.chat_id
+            };
+            let payload = crate::network::file_transfer::DmPayload::MessageDeleted {
+                message_id,
+            };
+            let _ = ft_manager.send_dm_payload(&recipient_id, payload).await;
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_contact(
+    node_id: String,
+    db: State<'_, Database>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    db.delete_contact(&node_id).map_err(|e| e.to_string())?;
+    use tauri::Emitter;
+    let _ = app_handle.emit("contacts://updated", ());
+    Ok(())
+}
+
+#[tauri::command]
 pub fn set_rnnoise(
     enabled: bool,
     audio_manager: State<'_, Arc<AudioManager>>,

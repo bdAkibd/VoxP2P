@@ -1,7 +1,8 @@
 <script lang="ts">
-  import type { UserProfile, Contact, RoomState } from "../types";
+  import type { UserProfile, Contact, RoomState, ContextMenuItem } from "../types";
   import { api } from "../api";
   import Avatar from "./Avatar.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
 
   let {
     profile,
@@ -35,6 +36,76 @@
   let copyFeedback = $state(false);
   let isEditingNickname = $state(false);
   let nicknameDraft = $state("");
+
+  // Context Menu & Remove Contact State
+  let contextMenuState = $state<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  let contactToRemove = $state<Contact | null>(null);
+  let isRemovingContact = $state(false);
+
+  function handleContactContextMenu(e: MouseEvent, contact: Contact) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const items: ContextMenuItem[] = [
+      {
+        label: "Start 1-on-1 Call",
+        icon: "📞",
+        action: () => {
+          if (onDirectCall) {
+            onDirectCall(contact.node_id);
+          } else {
+            onJoinRoom(`room_${contact.node_id.slice(0, 8)}`);
+          }
+        },
+      },
+      {
+        label: "Copy User ID",
+        icon: "📋",
+        action: async () => {
+          try {
+            await navigator.clipboard.writeText(contact.node_id);
+          } catch (err) {
+            console.error("Failed to copy user ID:", err);
+          }
+        },
+      },
+      {
+        separator: true,
+        label: "",
+        action: () => {},
+      },
+      {
+        label: "Remove Contact",
+        icon: "🗑️",
+        danger: true,
+        action: () => {
+          contactToRemove = contact;
+        },
+      },
+    ];
+
+    contextMenuState = {
+      x: e.clientX,
+      y: e.clientY,
+      items,
+    };
+  }
+
+  async function handleConfirmRemoveContact() {
+    if (!contactToRemove) return;
+    isRemovingContact = true;
+    try {
+      await api.deleteContact(contactToRemove.node_id);
+      if (activeChatId === contactToRemove.node_id) {
+        activeChatId = "lobby";
+      }
+      contactToRemove = null;
+    } catch (err) {
+      console.error("Failed to remove contact:", err);
+    } finally {
+      isRemovingContact = false;
+    }
+  }
 
   function formatShortId(id: string): string {
     if (!id) return "";
@@ -172,6 +243,7 @@
             role="button"
             tabindex="0"
             onclick={() => (activeChatId = contact.node_id)}
+            oncontextmenu={(e) => handleContactContextMenu(e, contact)}
             onkeydown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 activeChatId = contact.node_id;
@@ -308,6 +380,46 @@
       <div class="modal-footer">
         <button class="btn-cancel" onclick={() => (showAddContactModal = false)}>Cancel</button>
         <button class="btn-primary" onclick={handleAddContactSubmit}>Add Contact</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if contextMenuState}
+  <ContextMenu
+    x={contextMenuState.x}
+    y={contextMenuState.y}
+    items={contextMenuState.items}
+    onClose={() => (contextMenuState = null)}
+  />
+{/if}
+
+{#if contactToRemove}
+  <div
+    class="confirm-modal-backdrop"
+    onclick={() => (contactToRemove = null)}
+    onkeydown={(e) => e.key === "Escape" && (contactToRemove = null)}
+    role="presentation"
+  >
+    <div
+      class="confirm-modal-card"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+    >
+      <h4>Remove Contact</h4>
+      <p>
+        Are you sure you want to remove <strong>{contactToRemove.nickname}</strong> ({formatShortId(contactToRemove.node_id)}) from your contacts?
+      </p>
+      <div class="confirm-modal-actions">
+        <button class="btn-cancel-modal" onclick={() => (contactToRemove = null)} disabled={isRemovingContact}>
+          Cancel
+        </button>
+        <button class="btn-danger-modal" onclick={handleConfirmRemoveContact} disabled={isRemovingContact}>
+          {isRemovingContact ? "Removing..." : "Remove Contact"}
+        </button>
       </div>
     </div>
   </div>
@@ -853,5 +965,85 @@
     color: #ffffff;
     font-weight: 600;
     cursor: pointer;
+  }
+
+  .confirm-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    backdrop-filter: blur(2px);
+  }
+
+  .confirm-modal-card {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 22px 24px;
+    width: 90vw;
+    max-width: 380px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+  }
+
+  .confirm-modal-card h4 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+  }
+
+  .confirm-modal-card p {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+
+  .confirm-modal-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 8px;
+  }
+
+  .btn-cancel-modal {
+    background: transparent;
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    color: var(--text-primary);
+    padding: 7px 14px;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .btn-cancel-modal:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .btn-danger-modal {
+    background: var(--danger-color, #ef4444);
+    border: none;
+    border-radius: var(--border-radius);
+    color: #ffffff;
+    padding: 7px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .btn-danger-modal:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  .btn-danger-modal:disabled,
+  .btn-cancel-modal:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

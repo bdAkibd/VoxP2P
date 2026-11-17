@@ -9,7 +9,10 @@ use audio::AudioManager;
 use ipc::commands::{
     add_contact,
     attach_file,
+    delete_contact,
+    delete_message,
     download_attachment,
+    edit_message,
     get_contacts,
     get_messages,
     get_my_profile,
@@ -263,7 +266,10 @@ pub fn run() {
             update_profile_avatar,
             get_avatar,
             get_app_settings,
-            set_app_setting
+            set_app_setting,
+            edit_message,
+            delete_message,
+            delete_contact
         ])
 
         .run(tauri::generate_context!())

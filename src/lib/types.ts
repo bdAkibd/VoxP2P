@@ -39,6 +39,25 @@ export interface Message {
   attachment_name?: string | null;
   timestamp: number;
   delivered: number;
+  is_edited?: number | boolean;
+}
+
+export interface ContextMenuItem {
+  label: string;
+  icon?: string;
+  action: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  separator?: boolean;
+}
+
+export interface MessageEditedPayload {
+  message_id: string;
+  new_content: string;
+}
+
+export interface MessageDeletedPayload {
+  message_id: string;
 }
 
 export interface AudioDeviceInfo {

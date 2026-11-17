@@ -10,6 +10,8 @@ pub const EVENT_ROOM_STATE: &str = "voxp2p://room-state";
 pub const EVENT_CHAT_MESSAGE: &str = "voxp2p://chat-message";
 pub const EVENT_CHAT_MESSAGE_RECEIVED: &str = "chat://message-received";
 pub const EVENT_CHAT_MESSAGE_DELIVERED: &str = "chat://message-delivered";
+pub const EVENT_CHAT_MESSAGE_EDITED: &str = "chat://message-edited";
+pub const EVENT_CHAT_MESSAGE_DELETED: &str = "chat://message-deleted";
 pub const EVENT_CALL_INCOMING_RING: &str = "call://incoming-ring";
 pub const EVENT_FILE_TRANSFER: &str = "voxp2p://file-transfer";
 pub const EVENT_TRANSFER_PROGRESS: &str = "transfer://progress";
@@ -44,6 +46,17 @@ pub struct ChatMessagePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageDeliveredPayload {
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEditedPayload {
+    pub message_id: String,
+    pub new_content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageDeletedPayload {
     pub message_id: String,
 }
 

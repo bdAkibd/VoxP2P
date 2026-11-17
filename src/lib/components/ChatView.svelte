@@ -1,9 +1,10 @@
 <script lang="ts">
   import { getCurrentWebview } from "@tauri-apps/api/webview";
-  import type { Message, UserProfile, TransferProgressPayload, Contact } from "../types";
+  import type { Message, UserProfile, TransferProgressPayload, Contact, ContextMenuItem } from "../types";
   import { api } from "../api";
   import { detectThemeInText, applyTheme, type ThemeConfig } from "../theme";
   import Avatar from "./Avatar.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
 
   let {
     activeChatId,
@@ -30,6 +31,21 @@
   let isDragging = $state(false);
   let transferProgressMap = $state<Record<string, TransferProgressPayload>>({});
   let downloadedHashes = $state<Record<string, boolean>>({});
+
+  // Context Menu State
+  let contextMenuState = $state<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+
+  // Message Editing State
+  let editingMessageId = $state<string | null>(null);
+  let editingContent = $state<string>("");
+
+  // Forward Modal State
+  let forwardingMessage = $state<Message | null>(null);
+  let isForwarding = $state<boolean>(false);
+  let forwardFeedback = $state<string | null>(null);
+
+  // Input Textarea Reference
+  let textareaEl = $state<HTMLTextAreaElement | null>(null);
 
   function extractTicket(text: string): string | null {
     if (!text) return null;
@@ -106,6 +122,211 @@
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  }
+
+  function handleMessageContextMenu(e: MouseEvent, msg: Message) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const isMe = msg.sender_id === profile?.node_id;
+    const items: ContextMenuItem[] = [];
+
+    // 1. Copy Text (if message has content)
+    if (msg.content) {
+      items.push({
+        label: "Copy Text",
+        icon: "📋",
+        action: async () => {
+          try {
+            await navigator.clipboard.writeText(msg.content);
+          } catch (err) {
+            console.error("Failed to copy message text:", err);
+          }
+        },
+      });
+    }
+
+    // 2. Forward to Contact...
+    items.push({
+      label: "Forward to Contact...",
+      icon: "↗️",
+      action: () => {
+        forwardingMessage = msg;
+        forwardFeedback = null;
+      },
+    });
+
+    // 3. Edit Message (visible only if sender is me and not a file attachment)
+    if (isMe && !msg.attachment_hash) {
+      items.push({
+        label: "Edit Message",
+        icon: "✏️",
+        action: () => {
+          editingMessageId = msg.id;
+          editingContent = msg.content;
+        },
+      });
+    }
+
+    items.push({
+      separator: true,
+      label: "",
+      action: () => {},
+    });
+
+    // 4. Delete Message
+    if (!isMe) {
+      items.push({
+        label: "Delete Message",
+        icon: "🗑️",
+        danger: true,
+        action: async () => {
+          try {
+            await api.deleteMessage(msg.id, false);
+          } catch (err) {
+            console.error("Failed to delete message:", err);
+          }
+        },
+      });
+    } else {
+      items.push({
+        label: "Delete for me",
+        icon: "🗑️",
+        danger: true,
+        action: async () => {
+          try {
+            await api.deleteMessage(msg.id, false);
+          } catch (err) {
+            console.error("Failed to delete message for me:", err);
+          }
+        },
+      });
+      items.push({
+        label: "Delete for everyone",
+        icon: "💥",
+        danger: true,
+        action: async () => {
+          try {
+            await api.deleteMessage(msg.id, true);
+          } catch (err) {
+            console.error("Failed to delete message for everyone:", err);
+          }
+        },
+      });
+    }
+
+    contextMenuState = {
+      x: e.clientX,
+      y: e.clientY,
+      items,
+    };
+  }
+
+  function handleInputContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const start = textareaEl?.selectionStart ?? 0;
+    const end = textareaEl?.selectionEnd ?? 0;
+    const hasSelection = start !== end;
+
+    const items: ContextMenuItem[] = [
+      {
+        label: "Cut",
+        icon: "✂️",
+        disabled: !hasSelection,
+        action: async () => {
+          if (!hasSelection || !textareaEl) return;
+          const sel = messageInput.slice(start, end);
+          try {
+            await navigator.clipboard.writeText(sel);
+          } catch (err) {
+            console.error("Failed to write to clipboard:", err);
+          }
+          messageInput = messageInput.slice(0, start) + messageInput.slice(end);
+          setTimeout(() => {
+            textareaEl?.setSelectionRange(start, start);
+            textareaEl?.focus();
+          }, 0);
+        },
+      },
+      {
+        label: "Copy",
+        icon: "📋",
+        disabled: !hasSelection,
+        action: async () => {
+          if (!hasSelection) return;
+          const sel = messageInput.slice(start, end);
+          try {
+            await navigator.clipboard.writeText(sel);
+          } catch (err) {
+            console.error("Failed to copy to clipboard:", err);
+          }
+        },
+      },
+      {
+        label: "Paste",
+        icon: "📥",
+        action: async () => {
+          try {
+            const clip = await navigator.clipboard.readText();
+            if (!clip) return;
+            messageInput = messageInput.slice(0, start) + clip + messageInput.slice(end);
+            setTimeout(() => {
+              const newPos = start + clip.length;
+              textareaEl?.setSelectionRange(newPos, newPos);
+              textareaEl?.focus();
+            }, 0);
+          } catch (err) {
+            console.error("Failed to paste from clipboard:", err);
+          }
+        },
+      },
+    ];
+
+    contextMenuState = {
+      x: e.clientX,
+      y: e.clientY,
+      items,
+    };
+  }
+
+  async function handleSaveEdit(msg: Message) {
+    if (!editingContent.trim()) return;
+    try {
+      await api.editMessage(msg.id, editingContent.trim());
+      editingMessageId = null;
+    } catch (err) {
+      console.error("Failed to save edited message:", err);
+    }
+  }
+
+  function handleCancelEdit() {
+    editingMessageId = null;
+    editingContent = "";
+  }
+
+  async function handleForwardTo(contact: Contact) {
+    if (!forwardingMessage) return;
+    isForwarding = true;
+    forwardFeedback = null;
+    try {
+      await api.sendMessage(
+        contact.node_id,
+        forwardingMessage.content,
+        forwardingMessage.attachment_hash,
+        forwardingMessage.attachment_name
+      );
+      forwardFeedback = `✓ Forwarded to ${contact.nickname}!`;
+      setTimeout(() => {
+        forwardingMessage = null;
+        forwardFeedback = null;
+        isForwarding = false;
+      }, 900);
+    } catch (err: any) {
+      forwardFeedback = `Error: ${err?.toString() || "Failed to forward"}`;
+      isForwarding = false;
     }
   }
 
@@ -261,7 +482,12 @@
         {@const isMe = msg.sender_id === profile?.node_id}
         {@const authorAvatarHash = isMe ? profile?.avatar_hash : senderContact?.avatar_path}
         {@const authorNickname = isMe ? (profile?.nickname || "You") : (senderContact?.nickname || msg.sender_id.slice(0, 4))}
-        <div class="message-card" class:my-message={isMe}>
+        <div
+          class="message-card"
+          class:my-message={isMe}
+          role="article"
+          oncontextmenu={(e) => handleMessageContextMenu(e, msg)}
+        >
           <div class="message-avatar-wrap">
             <Avatar
               hash={authorAvatarHash}
@@ -288,10 +514,38 @@
             </div>
 
             <!-- Content -->
-            {#if msg.content}
+            {#if editingMessageId === msg.id}
+              <div class="inline-edit-box">
+                <textarea
+                  class="edit-textarea"
+                  bind:value={editingContent}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSaveEdit(msg);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      handleCancelEdit();
+                    }
+                  }}
+                  rows="2"
+                ></textarea>
+                <div class="edit-btn-row">
+                  <button class="btn-cancel-edit" onclick={handleCancelEdit}>
+                    Cancel
+                  </button>
+                  <button class="btn-save-edit" onclick={() => handleSaveEdit(msg)}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            {:else if msg.content}
               <div class="message-text">
                 <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                 {@html renderMarkdown(msg.content)}
+                {#if msg.is_edited}
+                  <span class="edited-badge" title="Edited message">(edited)</span>
+                {/if}
               </div>
             {/if}
 
@@ -379,10 +633,12 @@
       📎
     </button>
     <textarea
+      bind:this={textareaEl}
       class="chat-textarea"
       placeholder={`Message ${activeChatId.startsWith("room_") ? activeChatId : "peer"}...`}
       bind:value={messageInput}
       onkeydown={handleKeydown}
+      oncontextmenu={handleInputContextMenu}
       rows="1"
     ></textarea>
     <button class="send-btn" onclick={handleSend} disabled={!messageInput.trim()}>
@@ -390,6 +646,69 @@
     </button>
   </div>
 </div>
+
+{#if contextMenuState}
+  <ContextMenu
+    x={contextMenuState.x}
+    y={contextMenuState.y}
+    items={contextMenuState.items}
+    onClose={() => (contextMenuState = null)}
+  />
+{/if}
+
+{#if forwardingMessage}
+  <div
+    class="forward-modal-backdrop"
+    onclick={() => (forwardingMessage = null)}
+    onkeydown={(e) => e.key === "Escape" && (forwardingMessage = null)}
+    role="presentation"
+  >
+    <div
+      class="forward-modal-card"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+    >
+      <div class="forward-modal-header">
+        <h4>Forward Message</h4>
+        <button class="forward-close-btn" onclick={() => (forwardingMessage = null)} aria-label="Close">&times;</button>
+      </div>
+
+      <div class="forward-message-preview">
+        <span class="preview-label">Message:</span>
+        <p class="preview-text">{forwardingMessage.content || forwardingMessage.attachment_name || "Attachment"}</p>
+      </div>
+
+      {#if forwardFeedback}
+        <div class="forward-feedback-msg">{forwardFeedback}</div>
+      {/if}
+
+      <div class="forward-contacts-list">
+        <span class="contacts-heading">Select Contact:</span>
+        {#if contacts.length === 0}
+          <div class="no-contacts-msg">No contacts available to forward to.</div>
+        {:else}
+          {#each contacts as contact}
+            <button
+              class="forward-contact-row"
+              onclick={() => handleForwardTo(contact)}
+              disabled={isForwarding}
+            >
+              <Avatar hash={contact.avatar_path} nickname={contact.nickname} size={32} />
+              <div class="contact-info-col">
+                <span class="contact-name">{contact.nickname}</span>
+                <span class="contact-id">{contact.node_id.slice(0, 12)}...</span>
+              </div>
+              <span class="forward-action-label">Send ›</span>
+            </button>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .chat-view-container {
@@ -531,6 +850,231 @@
     display: flex;
     gap: 12px;
     align-items: flex-start;
+    padding: 6px 10px;
+    border-radius: var(--border-radius);
+    transition: background-color 0.12s ease;
+    cursor: default;
+  }
+
+  .message-card:hover {
+    background-color: rgba(255, 255, 255, 0.03);
+  }
+
+  .edited-badge {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-left: 6px;
+    user-select: none;
+  }
+
+  .inline-edit-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+    width: 100%;
+    max-width: 520px;
+  }
+
+  .edit-textarea {
+    width: 100%;
+    background: var(--bg-secondary);
+    border: var(--border-width) solid var(--accent-primary);
+    border-radius: var(--border-radius);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: inherit;
+    padding: 8px 10px;
+    resize: vertical;
+    min-height: 48px;
+    box-sizing: border-box;
+  }
+
+  .edit-textarea:focus {
+    outline: none;
+  }
+
+  .edit-btn-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  .btn-save-edit {
+    background: var(--accent-primary);
+    border: none;
+    border-radius: 4px;
+    color: #ffffff;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 5px 14px;
+    cursor: pointer;
+  }
+
+  .btn-save-edit:hover {
+    background: var(--accent-hover);
+  }
+
+  .btn-cancel-edit {
+    background: transparent;
+    border: var(--border-width) solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+
+  .btn-cancel-edit:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
+
+  /* Forward Message Modal */
+  .forward-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    backdrop-filter: blur(2px);
+  }
+
+  .forward-modal-card {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 20px;
+    width: 90vw;
+    max-width: 400px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .forward-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .forward-modal-header h4 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+  }
+
+  .forward-close-btn {
+    background: transparent;
+    border: none;
+    font-size: 1.3rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    line-height: 1;
+  }
+
+  .forward-close-btn:hover {
+    color: var(--text-primary);
+  }
+
+  .forward-message-preview {
+    background: var(--bg-secondary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px 12px;
+  }
+
+  .preview-label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .preview-text {
+    margin: 4px 0 0 0;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .forward-contacts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
+  .contacts-heading {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .no-contacts-msg {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    padding: 12px;
+    text-align: center;
+  }
+
+  .forward-contact-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: var(--border-width) solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    transition: all 0.12s ease;
+  }
+
+  .forward-contact-row:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    border-color: var(--accent-primary);
+  }
+
+  .contact-info-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .contact-name {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .contact-id {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: monospace;
+  }
+
+  .forward-action-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--accent-primary);
+  }
+
+  .forward-feedback-msg {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--online-status-color, #10b981);
+    text-align: center;
   }
 
   .message-avatar-wrap {

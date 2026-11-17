@@ -179,6 +179,13 @@ pub enum RoomGossipMessage {
         attachment_name: Option<String>,
         timestamp: i64,
     },
+    MessageEdited {
+        message_id: String,
+        new_content: String,
+    },
+    MessageDeleted {
+        message_id: String,
+    },
 }
 
 
@@ -353,6 +360,8 @@ impl RoomState {
 
 pub type HostChangedCallback = Arc<dyn Fn(&HostChangedPayload) + Send + Sync>;
 pub type ChatMessageCallback = Arc<dyn Fn(&Message) + Send + Sync>;
+pub type ChatMessageEditedCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
+pub type ChatMessageDeletedCallback = Arc<dyn Fn(&str) + Send + Sync>;
 pub type PeersUpdatedCallback = Arc<dyn Fn(&RoomState) + Send + Sync>;
 pub type AvatarHandshakeCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 pub type PeerJoinedCallback = Arc<dyn Fn(&str) + Send + Sync>;
@@ -370,6 +379,8 @@ pub struct RoomSession {
     pub db: Database,
     pub host_changed_cb: Option<HostChangedCallback>,
     pub chat_message_cb: Option<ChatMessageCallback>,
+    pub chat_edit_cb: Option<ChatMessageEditedCallback>,
+    pub chat_delete_cb: Option<ChatMessageDeletedCallback>,
     pub peers_updated_cb: Option<PeersUpdatedCallback>,
     pub peer_joined_cb: Option<PeerJoinedCallback>,
     pub avatar_cb: Arc<RwLock<Option<AvatarHandshakeCallback>>>,
@@ -402,6 +413,8 @@ impl RoomSession {
             chat_message_cb,
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -425,6 +438,8 @@ impl RoomSession {
             chat_message_cb,
             peers_updated_cb,
             None,
+            None,
+            None,
         )
     }
 
@@ -438,6 +453,8 @@ impl RoomSession {
         chat_message_cb: Option<ChatMessageCallback>,
         peers_updated_cb: Option<PeersUpdatedCallback>,
         peer_joined_cb: Option<PeerJoinedCallback>,
+        chat_edit_cb: Option<ChatMessageEditedCallback>,
+        chat_delete_cb: Option<ChatMessageDeletedCallback>,
     ) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(256);
         let (forwarded_datagram_tx, _) = broadcast::channel(1024);
@@ -467,6 +484,8 @@ impl RoomSession {
             db,
             host_changed_cb: host_changed_cb.clone(),
             chat_message_cb,
+            chat_edit_cb,
+            chat_delete_cb,
             peers_updated_cb: peers_updated_cb.clone(),
             peer_joined_cb,
             avatar_cb: Arc::new(RwLock::new(None)),
@@ -954,10 +973,23 @@ impl RoomSession {
                     attachment_name,
                     timestamp,
                     delivered: 1,
+                    is_edited: 0,
                 };
                 self.db.insert_message(&msg).map_err(|e| e.to_string())?;
                 if let Some(ref cb) = self.chat_message_cb {
                     cb(&msg);
+                }
+            }
+            RoomGossipMessage::MessageEdited { message_id, new_content } => {
+                let _ = self.db.edit_message(&message_id, &new_content);
+                if let Some(ref cb) = self.chat_edit_cb {
+                    cb(&message_id, &new_content);
+                }
+            }
+            RoomGossipMessage::MessageDeleted { message_id } => {
+                let _ = self.db.delete_message(&message_id);
+                if let Some(ref cb) = self.chat_delete_cb {
+                    cb(&message_id);
                 }
             }
         }
@@ -986,6 +1018,7 @@ impl RoomSession {
             attachment_name: attachment_name.clone(),
             timestamp: now,
             delivered: 1,
+            is_edited: 0,
         };
 
         self.db.insert_message(&msg).map_err(|e| e.to_string())?;
@@ -1566,6 +1599,35 @@ impl RoomManager {
             });
         });
 
+        let chat_edit_cb = self.app_handle.as_ref().map(|app| {
+            let app_handle = app.clone();
+            let cb: ChatMessageEditedCallback = Arc::new(move |msg_id: &str, new_content: &str| {
+                use tauri::Emitter;
+                let _ = app_handle.emit(
+                    crate::ipc::events::EVENT_CHAT_MESSAGE_EDITED,
+                    crate::ipc::events::MessageEditedPayload {
+                        message_id: msg_id.to_string(),
+                        new_content: new_content.to_string(),
+                    },
+                );
+            });
+            cb
+        });
+
+        let chat_delete_cb = self.app_handle.as_ref().map(|app| {
+            let app_handle = app.clone();
+            let cb: ChatMessageDeletedCallback = Arc::new(move |msg_id: &str| {
+                use tauri::Emitter;
+                let _ = app_handle.emit(
+                    crate::ipc::events::EVENT_CHAT_MESSAGE_DELETED,
+                    crate::ipc::events::MessageDeletedPayload {
+                        message_id: msg_id.to_string(),
+                    },
+                );
+            });
+            cb
+        });
+
         let session = RoomSession::with_all_callbacks(
             room_id.clone(),
             inner.local_node_id.clone(),
@@ -1576,6 +1638,8 @@ impl RoomManager {
             chat_message_cb,
             peers_updated_cb.clone(),
             Some(peer_joined_cb),
+            chat_edit_cb,
+            chat_delete_cb,
         );
 
         if let Some(s) = gossip_sender {

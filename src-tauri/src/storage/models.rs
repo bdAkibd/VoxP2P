@@ -27,6 +27,8 @@ pub struct Message {
     pub attachment_name: Option<String>,
     pub timestamp: i64,
     pub delivered: i32,
+    #[serde(default)]
+    pub is_edited: i32,
 }
 
 pub type ChatMessage = Message;

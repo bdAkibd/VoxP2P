@@ -104,6 +104,8 @@
     let unlistenSyncImport: (() => void) | undefined;
     let unlistenProfileUpdated: (() => void) | undefined;
     let unlistenContactsUpdated: (() => void) | undefined;
+    let unlistenChatEdited: (() => void) | undefined;
+    let unlistenChatDeleted: (() => void) | undefined;
 
     api.onAudioLevels((levels) => {
       audioLevels = levels;
@@ -156,6 +158,18 @@
       loadContacts();
     }).then((u) => (unlistenContactsUpdated = u));
 
+    api.onChatMessageEdited((payload) => {
+      const idx = messages.findIndex((m) => m.id === payload.message_id);
+      if (idx !== -1) {
+        messages[idx] = { ...messages[idx], content: payload.new_content, is_edited: 1 };
+        messages = [...messages];
+      }
+    }).then((u) => (unlistenChatEdited = u));
+
+    api.onChatMessageDeleted((payload) => {
+      messages = messages.filter((m) => m.id !== payload.message_id);
+    }).then((u) => (unlistenChatDeleted = u));
+
     return () => {
       window.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("resize", checkViewport);
@@ -169,6 +183,8 @@
       unlistenSyncImport?.();
       unlistenProfileUpdated?.();
       unlistenContactsUpdated?.();
+      unlistenChatEdited?.();
+      unlistenChatDeleted?.();
     };
   });
 

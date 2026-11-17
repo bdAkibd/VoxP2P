@@ -18,6 +18,8 @@ import type {
   DeviceSyncImportResult,
   SyncHostCompletedPayload,
   SyncImportCompletedPayload,
+  MessageEditedPayload,
+  MessageDeletedPayload,
 } from "./types";
 
 export const api = {
@@ -231,6 +233,18 @@ export const api = {
     return await invoke<DeviceSyncImportResult>("import_from_sync_qr", { qrString });
   },
 
+  async deleteContact(nodeId: string): Promise<void> {
+    return await invoke("delete_contact", { nodeId });
+  },
+
+  async editMessage(messageId: string, newContent: string): Promise<void> {
+    return await invoke("edit_message", { messageId, newContent });
+  },
+
+  async deleteMessage(messageId: string, forEveryone: boolean = false): Promise<void> {
+    return await invoke("delete_message", { messageId, forEveryone });
+  },
+
   // Event Listeners
   onAudioLevels(callback: (levels: Record<string, number>) => void): Promise<UnlistenFn> {
     return listen<Record<string, number>>("audio://levels", (event) => {
@@ -308,6 +322,18 @@ export const api = {
   onContactsUpdated(callback: () => void): Promise<UnlistenFn> {
     return listen("contacts://updated", () => {
       callback();
+    });
+  },
+
+  onChatMessageEdited(callback: (payload: MessageEditedPayload) => void): Promise<UnlistenFn> {
+    return listen<MessageEditedPayload>("chat://message-edited", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onChatMessageDeleted(callback: (payload: MessageDeletedPayload) => void): Promise<UnlistenFn> {
+    return listen<MessageDeletedPayload>("chat://message-deleted", (event) => {
+      callback(event.payload);
     });
   },
 };
