@@ -790,16 +790,23 @@
   .attach-btn {
     background: transparent;
     border: none;
-    font-size: 1.25rem;
+    font-size: 1.35rem;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 4px;
-    border-radius: 4px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
+    border-radius: var(--border-radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: color 0.15s;
+    flex-shrink: 0;
   }
 
   .attach-btn:hover {
     color: var(--text-primary);
+    background: var(--bg-tertiary);
   }
 
   .chat-textarea {
@@ -813,6 +820,7 @@
     resize: none;
     font-family: inherit;
     line-height: 1.3;
+    min-height: 44px;
   }
 
   .chat-textarea:focus {
@@ -824,15 +832,18 @@
     background: var(--accent-primary);
     color: #ffffff;
     border: none;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
     border-radius: var(--border-radius);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    font-size: 0.95rem;
+    font-size: 1.1rem;
     transition: all 0.15s ease;
+    flex-shrink: 0;
   }
 
   .send-btn:hover:not(:disabled) {

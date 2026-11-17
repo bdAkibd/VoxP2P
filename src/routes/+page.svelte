@@ -18,8 +18,10 @@
   let isMuted = $state<boolean>(false);
   let isDeafened = $state<boolean>(false);
   let showSettingsModal = $state<boolean>(false);
-  let isMobileDrawerOpen = $state<boolean>(false);
   let incomingCall = $state<DirectCallRingPayload | null>(null);
+  let isMobile = $state<boolean>(false);
+  let mobileTab = $state<"chats" | "call" | "contacts" | "settings">("chats");
+  let settingsInitialTab = $state<"audio" | "network" | "theme" | "sync">("audio");
 
   // Swipe gesture detection
   let touchStartX = 0;
@@ -33,21 +35,28 @@
   }
 
   function handleTouchEnd(e: TouchEvent) {
-    if (e.changedTouches.length === 1) {
+    if (e.changedTouches.length === 1 && isMobile) {
       const touchEndX = e.changedTouches[0].clientX;
       const touchEndY = e.changedTouches[0].clientY;
       const deltaX = touchEndX - touchStartX;
       const deltaY = touchEndY - touchStartY;
 
-      // Swipe right from left edge to open
-      if (deltaX > 70 && Math.abs(deltaY) < 60 && touchStartX < 50) {
-        isMobileDrawerOpen = true;
-      }
-      // Swipe left to close drawer
-      else if (deltaX < -70 && Math.abs(deltaY) < 60 && isMobileDrawerOpen) {
-        isMobileDrawerOpen = false;
+      // Horizontal swipe between mobile tabs
+      if (Math.abs(deltaX) > 60 && Math.abs(deltaY) < 60) {
+        const tabs: Array<"chats" | "call" | "contacts" | "settings"> = ["chats", "call", "contacts", "settings"];
+        const currentIndex = tabs.indexOf(mobileTab);
+        if (deltaX < 0 && currentIndex < tabs.length - 1) {
+          mobileTab = tabs[currentIndex + 1];
+        } else if (deltaX > 0 && currentIndex > 0) {
+          mobileTab = tabs[currentIndex - 1];
+        }
       }
     }
+  }
+
+  function openSettings(tab: "audio" | "network" | "theme" | "sync" = "audio") {
+    settingsInitialTab = tab;
+    showSettingsModal = true;
   }
 
   onMount(() => {
@@ -56,6 +65,13 @@
       e.preventDefault();
     };
     window.addEventListener("contextmenu", handleContextMenu);
+
+    // Responsive viewport check
+    const checkViewport = () => {
+      isMobile = window.innerWidth < 768;
+    };
+    checkViewport();
+    window.addEventListener("resize", checkViewport);
 
     // 1. Initialize Theme
     currentTheme = initTheme();
@@ -131,6 +147,7 @@
 
     return () => {
       window.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("resize", checkViewport);
       unlistenLevels?.();
       unlistenHost?.();
       unlistenPeers?.();
@@ -201,6 +218,9 @@
       const state = await api.joinRoom(roomId);
       roomState = state;
       activeChatId = roomId;
+      if (isMobile) {
+        mobileTab = "call";
+      }
     } catch (err) {
       console.error("Failed to join room:", err);
     }
@@ -210,6 +230,9 @@
     try {
       await api.leaveRoom();
       roomState = null;
+      if (isMobile && mobileTab === "call") {
+        mobileTab = "chats";
+      }
     } catch (err) {
       console.error("Failed to leave room:", err);
     }
@@ -220,6 +243,9 @@
       const state = await api.startDirectCall(contactNodeId);
       roomState = state;
       activeChatId = contactNodeId;
+      if (isMobile) {
+        mobileTab = "call";
+      }
     } catch (err) {
       console.error("Failed to start direct call:", err);
     }
@@ -253,115 +279,327 @@
   ontouchend={handleTouchEnd}
 />
 
-<main class="app-layout">
-  <!-- Mobile Backdrop Overlay -->
-  {#if isMobileDrawerOpen}
-    <div
-      class="mobile-backdrop"
-      onclick={() => (isMobileDrawerOpen = false)}
-      onkeydown={(e) => e.key === "Escape" && (isMobileDrawerOpen = false)}
-      role="button"
-      tabindex="-1"
-      aria-label="Close menu drawer"
-    ></div>
-  {/if}
-
-  <!-- Left: Sidebar Drawer Wrapper -->
-  <div class="sidebar-wrapper" class:open={isMobileDrawerOpen}>
-    <Sidebar
-      {profile}
-      {contacts}
-      {roomState}
-      bind:activeChatId
-      bind:isMuted
-      bind:isDeafened
-      onOpenSettings={() => (showSettingsModal = true)}
-      onJoinRoom={(roomId) => {
-        handleJoinRoom(roomId);
-        isMobileDrawerOpen = false;
-      }}
-      onLeaveRoom={handleLeaveRoom}
-      onAddContact={handleAddContact}
-      onDirectCall={handleDirectCall}
-    />
-  </div>
-
-  <!-- Right: Voice Call Top Panel + Chat Bottom Panel -->
-  <section class="main-content-panel">
-    <!-- Mobile Header Bar with Hamburger Button -->
-    <div class="mobile-header-bar">
-      <button
-        class="hamburger-btn"
-        aria-label="Toggle navigation drawer"
-        onclick={() => (isMobileDrawerOpen = !isMobileDrawerOpen)}
-      >
-        ☰
-      </button>
-      <span class="mobile-chat-title">
-        {activeChatId.startsWith("room_") || activeChatId.length < 32
-          ? `Room: ${activeChatId}`
-          : `Direct: ${activeChatId.slice(0, 10)}...`}
-      </span>
-      <button
-        class="mobile-settings-btn"
-        aria-label="Open settings"
-        onclick={() => (showSettingsModal = true)}
-      >
-        ⚙
-      </button>
+<main class="app-layout" class:mobile-mode={isMobile}>
+  {#if !isMobile}
+    <!-- DESKTOP 2-COLUMN VIEW -->
+    <div class="sidebar-wrapper">
+      <Sidebar
+        {profile}
+        {contacts}
+        {roomState}
+        bind:activeChatId
+        bind:isMuted
+        bind:isDeafened
+        onOpenSettings={() => openSettings("audio")}
+        onJoinRoom={handleJoinRoom}
+        onLeaveRoom={handleLeaveRoom}
+        onAddContact={handleAddContact}
+        onDirectCall={handleDirectCall}
+      />
     </div>
 
-    <!-- Active Call Compact Banner (when navigating to direct contact DMs during a call) -->
-    {#if roomState && activeChatId !== roomState.room_id}
-      <div class="active-call-compact-banner">
-        <div
-          class="banner-left"
-          onclick={() => (activeChatId = roomState!.room_id)}
-          role="button"
-          tabindex="0"
-          onkeydown={(e) => e.key === "Enter" && (activeChatId = roomState!.room_id)}
-        >
-          <span class="live-dot pulse"></span>
-          <span class="banner-title">
-            🔊 {roomState.room_id.startsWith("call_") ? "1-on-1 Call" : "In Voice Room"}: <strong>{roomState.room_id}</strong>
-          </span>
-          <span class="banner-peer-count">
-            ({roomState.peers.length} active {roomState.peers.length === 1 ? "peer" : "peers"})
-          </span>
-        </div>
-        <div class="banner-right">
-          <button
-            class="banner-btn return-btn"
+    <!-- Right: Voice Call Top Panel + Chat Bottom Panel -->
+    <section class="main-content-panel">
+      <!-- Active Call Compact Banner (when navigating to direct contact DMs during a call) -->
+      {#if roomState && activeChatId !== roomState.room_id}
+        <div class="active-call-compact-banner">
+          <div
+            class="banner-left"
             onclick={() => (activeChatId = roomState!.room_id)}
+            role="button"
+            tabindex="0"
+            onkeydown={(e) => e.key === "Enter" && (activeChatId = roomState!.room_id)}
           >
-            Return to Call
-          </button>
-          <button class="banner-btn leave-btn" onclick={handleLeaveRoom}>
-            Leave Call
-          </button>
+            <span class="live-dot pulse"></span>
+            <span class="banner-title">
+              🔊 {roomState.room_id.startsWith("call_") ? "1-on-1 Call" : "In Voice Room"}: <strong>{roomState.room_id}</strong>
+            </span>
+            <span class="banner-peer-count">
+              ({roomState.peers.length} active {roomState.peers.length === 1 ? "peer" : "peers"})
+            </span>
+          </div>
+          <div class="banner-right">
+            <button
+              class="banner-btn return-btn"
+              onclick={() => (activeChatId = roomState!.room_id)}
+            >
+              Return to Call
+            </button>
+            <button class="banner-btn leave-btn" onclick={handleLeaveRoom}>
+              Leave Call
+            </button>
+          </div>
         </div>
-      </div>
-    {:else if !roomState && activeChatId !== "lobby" && !activeChatId.startsWith("room_") && !activeChatId.startsWith("call_")}
-      <!-- Direct DM without active call: let ChatView take full height -->
-    {:else}
-      <CallView {roomState} {profile} {audioLevels} />
-    {/if}
+      {:else if !roomState && activeChatId !== "lobby" && !activeChatId.startsWith("room_") && !activeChatId.startsWith("call_")}
+        <!-- Direct DM without active call: let ChatView take full height -->
+      {:else}
+        <CallView {roomState} {profile} {audioLevels} />
+      {/if}
 
-    <ChatView
-      {activeChatId}
-      {profile}
-      {messages}
-      onSendMessage={handleSendMessage}
-      onThemeApplied={handleThemeApplied}
-      onJoinRoom={handleJoinRoom}
-      onDirectCall={handleDirectCall}
-    />
-  </section>
+      <ChatView
+        {activeChatId}
+        {profile}
+        {messages}
+        onSendMessage={handleSendMessage}
+        onThemeApplied={handleThemeApplied}
+        onJoinRoom={handleJoinRoom}
+        onDirectCall={handleDirectCall}
+      />
+    </section>
+
+  {:else}
+    <!-- MOBILE VIEWPORT WITH BOTTOM NAVIGATION TABS -->
+    <div class="mobile-main-container">
+      {#if mobileTab === "chats"}
+        <div class="mobile-tab-content">
+          <div class="mobile-header-bar">
+            <div class="mobile-header-title-box">
+              <span class="mobile-chat-title">{getContactName(activeChatId)}</span>
+              {#if activeChatId !== "lobby"}
+                <span class="mobile-chat-sub">
+                  {activeChatId.startsWith("room_") ? "Mesh Room" : "Direct Message"}
+                </span>
+              {/if}
+            </div>
+            <div class="mobile-header-actions">
+              {#if activeChatId !== "lobby" && !activeChatId.startsWith("room_")}
+                <button
+                  class="mobile-touch-btn"
+                  title="Call Contact"
+                  onclick={() => handleDirectCall(activeChatId)}
+                  aria-label="Call Contact"
+                >
+                  📞
+                </button>
+              {/if}
+              <button
+                class="mobile-touch-btn"
+                title="Scan QR Code"
+                onclick={() => openSettings("sync")}
+                aria-label="Scan QR Code"
+              >
+                📷
+              </button>
+            </div>
+          </div>
+
+          {#if roomState}
+            <div
+              class="active-call-compact-banner mobile-clickable"
+              onclick={() => (mobileTab = "call")}
+              role="button"
+              tabindex="0"
+              onkeydown={(e) => e.key === "Enter" && (mobileTab = "call")}
+            >
+              <div class="banner-left">
+                <span class="live-dot pulse"></span>
+                <span class="banner-title">
+                  🔊 Active Call: <strong>{roomState.room_id}</strong>
+                </span>
+              </div>
+              <button class="banner-btn return-btn" onclick={() => (mobileTab = "call")}>
+                View Call ›
+              </button>
+            </div>
+          {/if}
+
+          <div class="mobile-screen-scrollable">
+            <ChatView
+              {activeChatId}
+              {profile}
+              {messages}
+              onSendMessage={handleSendMessage}
+              onThemeApplied={handleThemeApplied}
+              onJoinRoom={(rid) => {
+                handleJoinRoom(rid);
+                mobileTab = "call";
+              }}
+              onDirectCall={(nid) => {
+                handleDirectCall(nid);
+                mobileTab = "call";
+              }}
+            />
+          </div>
+        </div>
+
+      {:else if mobileTab === "call"}
+        <div class="mobile-tab-content">
+          <div class="mobile-header-bar">
+            <span class="mobile-chat-title">🔊 Active Voice Call</span>
+            {#if roomState}
+              <button class="banner-btn leave-btn" onclick={handleLeaveRoom}>
+                Leave Call
+              </button>
+            {/if}
+          </div>
+
+          <div class="mobile-screen-scrollable">
+            {#if roomState}
+              <CallView {roomState} {profile} {audioLevels} />
+            {:else}
+              <div class="mobile-idle-screen">
+                <div class="idle-card-box">
+                  <div class="idle-big-icon">🎙️</div>
+                  <h3>No Active Call</h3>
+                  <p>You are not currently in a voice call. Join the general lobby or call a contact directly.</p>
+                  <div class="idle-actions-col">
+                    <button class="btn-primary hero-btn" onclick={() => handleJoinRoom("lobby")}>
+                      🏠 Join Public Lobby
+                    </button>
+                    <button class="btn-secondary hero-btn" onclick={() => (mobileTab = "contacts")}>
+                      👥 Choose a Contact
+                    </button>
+                  </div>
+                </div>
+              </div>
+            {/if}
+          </div>
+        </div>
+
+      {:else if mobileTab === "contacts"}
+        <div class="mobile-tab-content">
+          <div class="mobile-screen-scrollable full-height">
+            <Sidebar
+              {profile}
+              {contacts}
+              {roomState}
+              bind:activeChatId
+              bind:isMuted
+              bind:isDeafened
+              onOpenSettings={() => openSettings("audio")}
+              onJoinRoom={(roomId) => {
+                handleJoinRoom(roomId);
+                mobileTab = "call";
+              }}
+              onLeaveRoom={handleLeaveRoom}
+              onAddContact={handleAddContact}
+              onDirectCall={(nid) => {
+                handleDirectCall(nid);
+                mobileTab = "call";
+              }}
+            />
+          </div>
+        </div>
+
+      {:else if mobileTab === "settings"}
+        <div class="mobile-tab-content">
+          <div class="mobile-header-bar">
+            <span class="mobile-chat-title">⚙️ Settings & Device Sync</span>
+          </div>
+
+          <div class="mobile-screen-scrollable mobile-settings-padding">
+            <!-- QR Sync Hero Card -->
+            <div class="mobile-hero-qr-card">
+              <div class="hero-qr-badge">📷 QR SYNC</div>
+              <h4>Link Mobile Device</h4>
+              <p>Scan a QR code from your desktop PC to instantly clone your account, contacts, and chat history.</p>
+              <button class="btn-primary hero-qr-action-btn" onclick={() => openSettings("sync")}>
+                📷 Scan QR or Generate Ticket
+              </button>
+            </div>
+
+            <div class="mobile-settings-nav-group">
+              <button class="mobile-settings-row-btn" onclick={() => openSettings("audio")}>
+                <span class="settings-row-icon">🎙️</span>
+                <div class="settings-row-text">
+                  <span class="settings-row-title">Voice & Audio</span>
+                  <span class="settings-row-desc">Microphone gain, RNNoise AI suppression & sensitivity</span>
+                </div>
+                <span class="settings-row-chevron">›</span>
+              </button>
+
+              <button class="mobile-settings-row-btn" onclick={() => openSettings("theme")}>
+                <span class="settings-row-icon">🎨</span>
+                <div class="settings-row-text">
+                  <span class="settings-row-title">Theme Studio</span>
+                  <span class="settings-row-desc">Dark Minimal, Cyberpunk, AMOLED, custom palette</span>
+                </div>
+                <span class="settings-row-chevron">›</span>
+              </button>
+
+              <button class="mobile-settings-row-btn" onclick={() => openSettings("network")}>
+                <span class="settings-row-icon">🌐</span>
+                <div class="settings-row-text">
+                  <span class="settings-row-title">Network & VPN Bypass</span>
+                  <span class="settings-row-desc">Direct binding, P2P NAT relay, serverless status</span>
+                </div>
+                <span class="settings-row-chevron">›</span>
+              </button>
+            </div>
+
+            <!-- Profile Overview Card -->
+            <div class="mobile-account-summary">
+              <div class="account-summary-top">
+                <span class="account-badge">My Account</span>
+                <span class="online-tag">● Connected</span>
+              </div>
+              <div class="account-nickname">{profile?.nickname || "VoxP2P Peer"}</div>
+              <div class="account-node-id">{profile?.node_id || ""}</div>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Bottom Navigation Bar (4 tabs) -->
+      <nav class="mobile-bottom-nav" aria-label="Mobile Navigation">
+        <button
+          class="nav-tab-btn"
+          class:active={mobileTab === "chats"}
+          onclick={() => (mobileTab = "chats")}
+          aria-label="Chats"
+        >
+          <span class="nav-tab-icon">💬</span>
+          <span class="nav-tab-label">Chats</span>
+        </button>
+
+        <button
+          class="nav-tab-btn"
+          class:active={mobileTab === "call"}
+          onclick={() => (mobileTab = "call")}
+          aria-label="Active Call"
+        >
+          <div class="nav-icon-container">
+            <span class="nav-tab-icon">🔊</span>
+            {#if roomState}
+              <span class="live-call-dot pulse"></span>
+            {/if}
+          </div>
+          <span class="nav-tab-label">Call</span>
+        </button>
+
+        <button
+          class="nav-tab-btn"
+          class:active={mobileTab === "contacts"}
+          onclick={() => (mobileTab = "contacts")}
+          aria-label="Contacts"
+        >
+          <div class="nav-icon-container">
+            <span class="nav-tab-icon">👥</span>
+            {#if contacts.length > 0}
+              <span class="contacts-count-bubble">{contacts.length}</span>
+            {/if}
+          </div>
+          <span class="nav-tab-label">Contacts</span>
+        </button>
+
+        <button
+          class="nav-tab-btn"
+          class:active={mobileTab === "settings"}
+          onclick={() => (mobileTab = "settings")}
+          aria-label="Settings"
+        >
+          <span class="nav-tab-icon">⚙️</span>
+          <span class="nav-tab-label">Settings</span>
+        </button>
+      </nav>
+    </div>
+  {/if}
 
   <!-- Settings Modal (Voice, Network, Theme Studio, Device Linking) -->
   {#if showSettingsModal}
     <SettingsModal
       bind:currentTheme
+      initialTab={settingsInitialTab}
       onClose={() => (showSettingsModal = false)}
       onSyncCompleted={() => {
         api.getMyProfile().then((p) => {
@@ -548,64 +786,400 @@
     }
   }
 
-  .mobile-header-bar {
-    display: none;
+  /* Mobile Navigation & Screen Styles */
+  .mobile-main-container {
+    display: flex;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+    background: var(--bg-primary);
   }
 
-  @media (max-width: 768px) {
-    .sidebar-wrapper {
-      display: block;
-      position: fixed;
-      top: 0;
-      left: 0;
-      bottom: 0;
-      width: 280px;
-      z-index: 150;
-      transform: translateX(-100%);
-      transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-    }
+  .mobile-tab-content {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    padding-bottom: 60px;
+    box-sizing: border-box;
+  }
 
-    .sidebar-wrapper.open {
-      transform: translateX(0);
-      box-shadow: 6px 0 24px rgba(0, 0, 0, 0.6);
-    }
+  .mobile-screen-scrollable {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
 
-    .mobile-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.65);
-      z-index: 140;
-    }
+  .mobile-screen-scrollable.full-height {
+    height: 100%;
+  }
 
-    .mobile-header-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 14px;
-      background: var(--bg-secondary);
-      border-bottom: var(--border-width) solid var(--border-color);
-      z-index: 10;
-    }
+  .mobile-header-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-bottom: var(--border-width) solid var(--border-color);
+    flex-shrink: 0;
+    min-height: 54px;
+    box-sizing: border-box;
+  }
 
-    .hamburger-btn, .mobile-settings-btn {
-      background: transparent;
-      border: none;
-      color: var(--text-primary);
-      font-size: 1.3rem;
-      cursor: pointer;
-      padding: 4px 8px;
-      border-radius: var(--border-radius);
-    }
+  .mobile-header-title-box {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
 
-    .hamburger-btn:hover, .mobile-settings-btn:hover {
-      background: var(--bg-tertiary);
-    }
+  .mobile-chat-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
-    .mobile-chat-title {
-      font-weight: 600;
-      font-size: 0.9rem;
-      color: var(--text-primary);
-    }
+  .mobile-chat-sub {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+
+  .mobile-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .mobile-touch-btn {
+    background: var(--bg-tertiary);
+    border: var(--border-width) solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 1.15rem;
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--border-radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .mobile-touch-btn:active {
+    background: var(--accent-primary);
+    color: #ffffff;
+  }
+
+  .mobile-clickable {
+    cursor: pointer;
+  }
+
+  /* Bottom Navigation Bar (4 tabs) */
+  .mobile-bottom-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60px;
+    background: var(--bg-secondary);
+    border-top: var(--border-width) solid var(--border-color);
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    z-index: 100;
+    box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.45);
+  }
+
+  .nav-tab-btn {
+    flex: 1;
+    height: 100%;
+    min-height: 44px;
+    min-width: 44px;
+    background: transparent;
+    border: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .nav-tab-btn.active {
+    color: var(--accent-primary);
+  }
+
+  .nav-tab-btn.active .nav-tab-icon {
+    transform: scale(1.1);
+  }
+
+  .nav-tab-icon {
+    font-size: 1.25rem;
+    line-height: 1;
+    transition: transform 0.15s ease;
+  }
+
+  .nav-tab-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .nav-icon-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .live-call-dot {
+    position: absolute;
+    top: -2px;
+    right: -6px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--voice-speaking-ring);
+    box-shadow: 0 0 6px var(--voice-speaking-ring);
+  }
+
+  .contacts-count-bubble {
+    position: absolute;
+    top: -4px;
+    right: -10px;
+    background: var(--accent-primary);
+    color: #ffffff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 8px;
+    line-height: 1.2;
+  }
+
+  /* Mobile Idle Call Screen */
+  .mobile-idle-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    padding: 24px;
+  }
+
+  .idle-card-box {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 28px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 12px;
+    max-width: 340px;
+    width: 100%;
+  }
+
+  .idle-big-icon {
+    font-size: 3rem;
+  }
+
+  .idle-card-box h3 {
+    margin: 0;
+    font-size: 1.15rem;
+    color: var(--text-primary);
+  }
+
+  .idle-card-box p {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .idle-actions-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    margin-top: 8px;
+  }
+
+  .hero-btn {
+    min-height: 46px;
+    width: 100%;
+    font-size: 0.9rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+  }
+
+  /* Mobile Settings Hub */
+  .mobile-settings-padding {
+    padding: 16px;
+    gap: 16px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mobile-hero-qr-card {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--accent-primary);
+    border-radius: var(--border-radius);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+
+  .hero-qr-badge {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent-primary);
+    letter-spacing: 0.05em;
+  }
+
+  .mobile-hero-qr-card h4 {
+    margin: 0;
+    font-size: 1.05rem;
+    color: var(--text-primary);
+  }
+
+  .mobile-hero-qr-card p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .hero-qr-action-btn {
+    min-height: 46px;
+    width: 100%;
+    font-size: 0.92rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    border: none;
+    background: var(--accent-primary);
+    color: #ffffff;
+  }
+
+  .hero-qr-action-btn:hover {
+    background: var(--accent-hover);
+  }
+
+  .mobile-settings-nav-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .mobile-settings-row-btn {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 12px 14px;
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s;
+    color: var(--text-primary);
+  }
+
+  .mobile-settings-row-btn:active {
+    background: var(--bg-tertiary);
+  }
+
+  .settings-row-icon {
+    font-size: 1.35rem;
+    flex-shrink: 0;
+  }
+
+  .settings-row-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .settings-row-title {
+    font-weight: 600;
+    font-size: 0.88rem;
+    color: var(--text-primary);
+  }
+
+  .settings-row-desc {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+  }
+
+  .settings-row-chevron {
+    font-size: 1.25rem;
+    color: var(--text-muted);
+  }
+
+  .mobile-account-summary {
+    background: var(--bg-secondary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .account-summary-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.75rem;
+  }
+
+  .account-badge {
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  .online-tag {
+    color: var(--online-status-color);
+    font-weight: 600;
+  }
+
+  .account-nickname {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text-primary);
+  }
+
+  .account-node-id {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: monospace;
+    word-break: break-all;
   }
 
   .incoming-call-overlay {
@@ -708,13 +1282,18 @@
 
   .call-action-btn {
     flex: 1;
-    padding: 10px 16px;
+    min-height: 48px;
+    min-width: 48px;
+    padding: 12px 18px;
     border-radius: var(--border-radius);
-    font-size: 0.9rem;
+    font-size: 1rem;
     font-weight: 600;
     cursor: pointer;
     border: none;
     transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .decline-btn {

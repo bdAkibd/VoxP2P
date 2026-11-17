@@ -287,11 +287,15 @@
     background: var(--surface-card);
     border: var(--border-width) solid var(--accent-primary);
     color: var(--text-primary);
-    padding: 5px 12px;
-    font-size: 0.78rem;
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 0.82rem;
     font-weight: 600;
     border-radius: var(--border-radius);
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: all 0.15s ease;
   }
 

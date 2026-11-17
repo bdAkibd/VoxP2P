@@ -42,6 +42,7 @@ pub fn is_virtual_adapter(name: &str, friendly_name: Option<&str>) -> bool {
 
 /// Detects the default physical network interface, ignoring virtual adapters matching
 /// `tun`, `tap`, `wintun`, `wireguard`, `nekobox`, `hamachi`, `radmin`.
+#[cfg(not(target_os = "android"))]
 pub fn detect_default_physical_interface() -> Option<PhysicalInterface> {
     let interfaces = netdev::get_interfaces();
 
@@ -86,8 +87,16 @@ pub fn detect_default_physical_interface() -> Option<PhysicalInterface> {
     None
 }
 
+/// On Android, raw interface indexing and netlink scanning are bypassed
+/// to prevent permission faults and panics within the mobile sandbox.
+#[cfg(target_os = "android")]
+pub fn detect_default_physical_interface() -> Option<PhysicalInterface> {
+    None
+}
+
 /// Creates and binds a UDP socket. If `bypass_vpn` is true, attempts to bind directly
 /// to the physical network adapter to bypass virtual VPN tunnels.
+#[cfg(not(target_os = "android"))]
 pub fn create_udp_socket(bind_port: u16, bypass_vpn: bool) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_nonblocking(true)?;
@@ -110,18 +119,10 @@ pub fn create_udp_socket(bind_port: u16, bypass_vpn: bool) -> std::io::Result<Ud
                 apply_macos_bound_if(&socket, physical_if.index)?;
             }
 
-            #[cfg(target_os = "android")]
-            {
-                // On Android, bypass requires VpnService protect() which is handled via JNI;
-                // fallback to standard UDP bind so builds and standard routing work safely.
-                let _ = physical_if;
-            }
-
             #[cfg(not(any(
                 target_os = "windows",
                 target_os = "linux",
-                target_os = "macos",
-                target_os = "android"
+                target_os = "macos"
             )))]
             {
                 let _ = physical_if;
@@ -132,6 +133,19 @@ pub fn create_udp_socket(bind_port: u16, bypass_vpn: bool) -> std::io::Result<Ud
     let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, bind_port));
     socket.bind(&bind_addr.into())?;
 
+    Ok(socket.into())
+}
+
+/// On Android, creates a standard bound non-blocking UDP socket.
+/// VPN tunnel exclusion on Android requires VpnService.protect() socket file-descriptor
+/// pass-through via Android Java SDK, so raw socket binding is bypassed safely.
+#[cfg(target_os = "android")]
+pub fn create_udp_socket(bind_port: u16, _bypass_vpn: bool) -> std::io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_nonblocking(true)?;
+    socket.set_reuse_address(true)?;
+    let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, bind_port));
+    socket.bind(&bind_addr.into())?;
     Ok(socket.into())
 }
 

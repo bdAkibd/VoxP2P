@@ -14,15 +14,23 @@
 
   let {
     currentTheme = $bindable(),
+    initialTab = "audio",
     onClose,
     onSyncCompleted,
   }: {
     currentTheme: ThemeConfig;
+    initialTab?: "audio" | "network" | "theme" | "sync";
     onClose: () => void;
     onSyncCompleted?: () => void;
   } = $props();
 
   let activeTab = $state<"audio" | "network" | "theme" | "sync">("audio");
+
+  $effect(() => {
+    if (initialTab) {
+      activeTab = initialTab;
+    }
+  });
 
   // Audio State
   let inputDevices = $state<AudioDeviceInfo[]>([]);
@@ -870,6 +878,41 @@
     flex-direction: column;
     overflow: hidden;
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  }
+
+  @media (max-width: 768px) {
+    .settings-dialog {
+      width: 100vw;
+      max-width: 100vw;
+      height: 100vh;
+      max-height: 100vh;
+      border-radius: 0;
+      border: none;
+    }
+
+    .tabs-row {
+      overflow-x: auto;
+      padding-bottom: 4px;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .tab-btn {
+      white-space: nowrap;
+      padding: 8px 10px;
+      font-size: 0.8rem;
+    }
+
+    .dialog-close-btn {
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .dialog-body {
+      padding: 16px;
+    }
   }
 
   .dialog-header {

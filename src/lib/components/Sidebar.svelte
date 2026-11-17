@@ -310,6 +310,15 @@
     user-select: none;
   }
 
+  @media (max-width: 768px) {
+    .sidebar {
+      width: 100%;
+      min-width: 0;
+      height: 100%;
+      border-right: none;
+    }
+  }
+
   .sidebar-header {
     display: flex;
     justify-content: space-between;
@@ -359,8 +368,13 @@
     color: var(--text-muted);
     font-size: 1.15rem;
     cursor: pointer;
-    padding: 6px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
     border-radius: var(--border-radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: background 0.15s;
   }
 
@@ -435,10 +449,15 @@
     background: transparent;
     border: none;
     color: var(--danger-color);
-    font-size: 1rem;
+    font-size: 1.1rem;
     cursor: pointer;
-    padding: 4px 6px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
     border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .leave-btn:hover {
@@ -593,16 +612,22 @@
   .quick-call-btn {
     background: transparent;
     border: none;
-    font-size: 0.85rem;
-    opacity: 0.6;
+    font-size: 1.1rem;
+    opacity: 0.75;
     cursor: pointer;
-    padding: 4px;
-    border-radius: 4px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
+    border-radius: var(--border-radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
   }
 
   .quick-call-btn:hover {
     opacity: 1;
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
   }
 
   .user-profile-badge {
@@ -687,10 +712,15 @@
     background: var(--bg-secondary);
     border: var(--border-width) solid var(--border-color);
     border-radius: var(--border-radius);
-    padding: 6px;
-    font-size: 0.9rem;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
+    font-size: 1.15rem;
     cursor: pointer;
     color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: all 0.15s ease;
   }
 
