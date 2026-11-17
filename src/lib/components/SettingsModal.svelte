@@ -1,8 +1,16 @@
 <script lang="ts">
-  import type { AudioDeviceInfo, DeviceSyncTicket, ImportSyncResult } from "../types";
+  import type {
+    AudioDeviceInfo,
+    DeviceSyncTicket,
+    ImportSyncResult,
+    DeviceSyncTicketPayload,
+    DeviceSyncImportResult,
+    SyncHostCompletedPayload,
+  } from "../types";
   import type { ThemeConfig } from "../theme";
   import { api } from "../api";
   import ThemeStudio from "./ThemeStudio.svelte";
+  import { scan, Format } from "@tauri-apps/plugin-barcode-scanner";
 
   let {
     currentTheme = $bindable(),
@@ -34,7 +42,26 @@
   // Network State
   let vpnBypassEnabled = $state<boolean>(true);
 
-  // Sync State
+  // QR Code Host State
+  let qrHostPayload = $state<DeviceSyncTicketPayload | null>(null);
+  let qrHostLoading = $state<boolean>(false);
+  let qrCountdown = $state<number>(0);
+  let qrHostSuccess = $state<SyncHostCompletedPayload | null>(null);
+  let qrHostError = $state<string | null>(null);
+  let copyQrFeedback = $state<boolean>(false);
+  let countdownTimer: any = null;
+
+  // QR Code Client / Import State
+  let qrImportInput = $state<string>("");
+  let qrImportLoading = $state<boolean>(false);
+  let qrImportError = $state<string | null>(null);
+  let qrImportResult = $state<DeviceSyncImportResult | null>(null);
+  let isScanningCamera = $state<boolean>(false);
+  let cameraVideoEl = $state<HTMLVideoElement | null>(null);
+  let cameraStream: MediaStream | null = null;
+  let cameraScanInterval: any = null;
+
+  // Legacy Blob Sync State
   let syncTicket = $state<DeviceSyncTicket | null>(null);
   let importTicketInput = $state<string>("");
   let syncResult = $state<ImportSyncResult | null>(null);
@@ -56,6 +83,19 @@
     });
 
     let unlistenLocalLevel: (() => void) | undefined;
+    let unlistenSyncHost: (() => void) | undefined;
+
+    // Listen for sync host completion
+    api.onSyncHostCompleted((payload) => {
+      qrHostSuccess = payload;
+      if (countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+      onSyncCompleted?.();
+    }).then((u) => {
+      unlistenSyncHost = u;
+    });
 
     // Activate local meter when in audio tab
     if (activeTab === "audio") {
@@ -76,10 +116,16 @@
 
     return () => {
       unlistenLocalLevel?.();
+      unlistenSyncHost?.();
       if (isTestingMic) {
         api.setMicTest(false).catch(console.error);
       }
       api.setMeterActive(false).catch(console.error);
+      if (countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+      stopCamera();
     };
   });
 
@@ -89,7 +135,167 @@
       api.setMicTest(false).catch(console.error);
     }
     api.setMeterActive(false).catch(console.error);
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    stopCamera();
     onClose();
+  }
+
+  // QR Sync Host Methods
+  async function handleStartQrHost() {
+    qrHostLoading = true;
+    qrHostError = null;
+    qrHostSuccess = null;
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    try {
+      const payload = await api.startDeviceSyncHost();
+      qrHostPayload = payload;
+      qrCountdown = payload.expires_in_secs || 120;
+      countdownTimer = setInterval(() => {
+        if (qrCountdown > 1) {
+          qrCountdown -= 1;
+        } else {
+          qrCountdown = 0;
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+        }
+      }, 1000);
+    } catch (err: any) {
+      qrHostError = err?.toString() || "Failed to start sync host";
+    } finally {
+      qrHostLoading = false;
+    }
+  }
+
+  function handleStopQrHost() {
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    qrHostPayload = null;
+    qrCountdown = 0;
+    qrHostSuccess = null;
+    qrHostError = null;
+  }
+
+  function copyQrTicket() {
+    if (!qrHostPayload?.ticket) return;
+    navigator.clipboard.writeText(qrHostPayload.ticket);
+    copyQrFeedback = true;
+    setTimeout(() => {
+      copyQrFeedback = false;
+    }, 2000);
+  }
+
+  // QR Sync Client / Import Methods
+  async function handleImportQr(ticketStr?: string) {
+    const target = (ticketStr || qrImportInput).trim();
+    if (!target) return;
+    stopCamera();
+    qrImportLoading = true;
+    qrImportError = null;
+    qrImportResult = null;
+    try {
+      const res = await api.importFromSyncQr(target);
+      qrImportResult = res;
+      onSyncCompleted?.();
+    } catch (err: any) {
+      qrImportError = err?.toString() || "Failed to import account from QR sync ticket";
+    } finally {
+      qrImportLoading = false;
+    }
+  }
+
+  async function handleScanQrWithCamera() {
+    qrImportError = null;
+    try {
+      const scanned = await scan({
+        formats: [Format.QRCode],
+        cameraDirection: "back",
+        windowed: false,
+      });
+      if (scanned && scanned.content) {
+        qrImportInput = scanned.content;
+        await handleImportQr(scanned.content);
+        return;
+      }
+    } catch (err: any) {
+      console.warn("Tauri barcode scanner unavailable or failed, falling back to camera stream:", err);
+    }
+
+    // Graceful Web/HTML5 camera stream fallback
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        isScanningCamera = true;
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+        });
+        setTimeout(async () => {
+          if (cameraVideoEl && cameraStream) {
+            cameraVideoEl.srcObject = cameraStream;
+            await cameraVideoEl.play().catch(console.error);
+            startVideoQrDetector();
+          }
+        }, 50);
+      } else {
+        qrImportError = "Camera not supported on this platform. Please paste the sync ticket manually below.";
+      }
+    } catch (camErr: any) {
+      isScanningCamera = false;
+      qrImportError = "Unable to access camera: " + (camErr?.message || camErr) + ". Please paste ticket manually.";
+    }
+  }
+
+  function stopCamera() {
+    isScanningCamera = false;
+    if (cameraScanInterval) {
+      clearInterval(cameraScanInterval);
+      cameraScanInterval = null;
+    }
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((t) => t.stop());
+      cameraStream = null;
+    }
+  }
+
+  function startVideoQrDetector() {
+    if (cameraScanInterval) clearInterval(cameraScanInterval);
+    const BarcodeDetectorClass = (window as any).BarcodeDetector;
+    if (BarcodeDetectorClass) {
+      const detector = new BarcodeDetectorClass({ formats: ["qr_code"] });
+      cameraScanInterval = setInterval(async () => {
+        if (!cameraVideoEl || cameraVideoEl.readyState < 2) return;
+        try {
+          const barcodes = await detector.detect(cameraVideoEl);
+          if (barcodes && barcodes.length > 0) {
+            const content = barcodes[0].rawValue;
+            if (content && content.startsWith("p2psync://")) {
+              stopCamera();
+              qrImportInput = content;
+              await handleImportQr(content);
+            }
+          }
+        } catch {
+          // Continue detection loop
+        }
+      }, 300);
+    }
+  }
+
+  async function handlePasteTicket() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        qrImportInput = text.trim();
+      }
+    } catch (err) {
+      console.warn("Failed to read clipboard:", err);
+    }
   }
 
   async function handleToggleMicTest() {
@@ -215,7 +421,7 @@
           class:active={activeTab === "sync"}
           onclick={() => (activeTab = "sync")}
         >
-          📱 Device Linking
+          📱 Device Sync & QR
         </button>
       </div>
       <button class="dialog-close-btn" onclick={handleModalClose}>&times;</button>
@@ -432,60 +638,210 @@
       {:else if activeTab === "theme"}
         <ThemeStudio bind:currentTheme {onClose} />
       {:else if activeTab === "sync"}
+        <!-- QR CODE HOST & CLIENT SYNC -->
         <div class="settings-group">
-          <h4>Export & Link to Mobile / Second Device</h4>
+          <h4>📱 Link Mobile Device (QR Code Sync)</h4>
           <p class="section-desc">
-            Export all contacts and message history into an encrypted P2P pairing ticket via iroh-blobs. Share this ticket with your Android phone or another PC to sync your history directly over LAN/P2P.
+            Instantly clone your account identity, contacts, and message history to your Android phone or companion device with end-to-end P2P encryption over ALPN <code>/p2pchat/sync/1</code>.
           </p>
-          <button class="btn-primary" onclick={handleGenerateSyncTicket} disabled={syncLoading}>
-            {syncLoading ? "Exporting history..." : "Generate Pairing Ticket"}
-          </button>
 
-          {#if syncTicket}
-            <div class="sync-ticket-box">
-              <div class="sync-stats">
-                <span>✓ Exported {syncTicket.contacts_count} contacts & {syncTicket.messages_count} messages</span>
+          <div class="sync-grid-container">
+            <!-- Left Card: Host QR Generator -->
+            <div class="sync-card">
+              <div class="sync-card-header">
+                <h5>🖥️ This Device (Host)</h5>
+                <span class="sync-role-badge">Export Identity</span>
               </div>
-              <div class="ticket-row">
-                <input type="text" class="ticket-input" readonly value={syncTicket.ticket} />
-                <button class="btn-secondary" onclick={copySyncTicket}>
-                  {copyFeedback ? "Copied! ✓" : "Copy Ticket"}
+              <p class="card-desc">
+                Generate a temporary, one-time authenticated QR code to clone this account onto your mobile phone.
+              </p>
+
+              {#if !qrHostPayload}
+                <button
+                  class="btn-primary"
+                  onclick={handleStartQrHost}
+                  disabled={qrHostLoading}
+                >
+                  {qrHostLoading ? "Starting P2P Sync Host..." : "⚡ Generate Sync QR Code"}
                 </button>
+              {:else}
+                <div class="qr-presentation">
+                  <div class="qr-code-svg-wrap">
+                    {@html qrHostPayload.qr_svg}
+                  </div>
+
+                  {#if qrCountdown > 0}
+                    <div class="qr-status-indicator">
+                      <span class="pulse-dot-green"></span>
+                      <span>Active &bull; Valid for {qrCountdown}s</span>
+                    </div>
+                  {:else}
+                    <div class="qr-status-expired">
+                      ⚠️ Session Expired (120s limit). Click below to generate a new QR code.
+                    </div>
+                  {/if}
+
+                  <div class="qr-ticket-actions">
+                    <button class="btn-secondary qr-copy-btn" onclick={copyQrTicket}>
+                      {copyQrFeedback ? "Copied! ✓" : "📋 Copy Sync Ticket"}
+                    </button>
+                    {#if qrCountdown === 0}
+                      <button class="btn-primary" onclick={handleStartQrHost} disabled={qrHostLoading}>
+                        🔄 Regenerate QR
+                      </button>
+                    {:else}
+                      <button class="btn-cancel-sync" onclick={handleStopQrHost}>
+                        ✕ Stop Session
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+
+              {#if qrHostSuccess}
+                <div class="sync-success-box highlight">
+                  ✓ Mobile device linked successfully! Cloned account with <strong>{qrHostSuccess.nickname}</strong>.
+                </div>
+              {/if}
+              {#if qrHostError}
+                <div class="sync-error-box">
+                  ✕ {qrHostError}
+                </div>
+              {/if}
+            </div>
+
+            <!-- Right Card: Scan / Import -->
+            <div class="sync-card">
+              <div class="sync-card-header">
+                <h5>📱 Companion Device (Client)</h5>
+                <span class="sync-role-badge">Import Identity</span>
+              </div>
+              <p class="card-desc">
+                Scan the QR code displayed on your PC, or paste the sync ticket to clone the identity directly.
+              </p>
+
+              <div class="scan-actions-group">
+                <button
+                  class="btn-primary scan-btn"
+                  onclick={handleScanQrWithCamera}
+                  disabled={qrImportLoading || isScanningCamera}
+                >
+                  📷 Scan QR with Camera
+                </button>
+
+                {#if isScanningCamera}
+                  <div class="camera-preview-container">
+                    <div class="camera-preview-header">
+                      <span>Point camera at QR code</span>
+                      <button class="camera-close-sm" onclick={stopCamera}>&times;</button>
+                    </div>
+                    <div class="camera-viewport">
+                      <video
+                        bind:this={cameraVideoEl}
+                        playsinline
+                        autoplay
+                        muted
+                        class="camera-stream-video"
+                      ></video>
+                      <div class="camera-scan-frame"></div>
+                    </div>
+                    <span class="camera-status-text">Scanning for QR code...</span>
+                  </div>
+                {/if}
+
+                <div class="manual-input-section">
+                  <label for="qr-ticket-paste" class="input-sublabel">Or paste Sync Ticket:</label>
+                  <div class="manual-ticket-row">
+                    <input
+                      id="qr-ticket-paste"
+                      type="text"
+                      class="ticket-input"
+                      placeholder="p2psync://<ticket>/<token>"
+                      bind:value={qrImportInput}
+                    />
+                    <button class="btn-secondary" onclick={handlePasteTicket} title="Paste from clipboard">
+                      📋 Paste
+                    </button>
+                  </div>
+                  <button
+                    class="btn-primary full-width"
+                    onclick={() => handleImportQr()}
+                    disabled={qrImportLoading || !qrImportInput.trim()}
+                  >
+                    {qrImportLoading ? "Cloning Account & History..." : "Import Account from Ticket"}
+                  </button>
+                </div>
+
+                {#if qrImportResult}
+                  <div class="sync-success-box highlight">
+                    ✓ Account Cloned Successfully! Identity: <strong>{qrImportResult.nickname}</strong> ({qrImportResult.contacts_imported} contacts & {qrImportResult.messages_imported} messages synced).
+                  </div>
+                {/if}
+                {#if qrImportError}
+                  <div class="sync-error-box">
+                    ✕ {qrImportError}
+                  </div>
+                {/if}
               </div>
             </div>
-          {/if}
+          </div>
         </div>
 
-        <div class="settings-group">
-          <h4>Import & Synchronize from Another Device</h4>
-          <p class="section-desc">
-            Paste a pairing ticket generated on another VoxP2P instance to import all contacts and chat history into this device.
-          </p>
-          <label for="import-sync-ticket-input" class="visually-hidden">Pairing Ticket</label>
-          <textarea
-            id="import-sync-ticket-input"
-            class="sync-textarea"
-            placeholder="Paste pairing ticket here..."
-            bind:value={importTicketInput}
-          ></textarea>
-          <button
-            class="btn-primary"
-            onclick={handleImportSyncTicket}
-            disabled={syncLoading || !importTicketInput.trim()}
-          >
-            {syncLoading ? "Syncing..." : "Sync from Device"}
-          </button>
+        <!-- Advanced Blob History Export (Legacy / Backup) -->
+        <div class="settings-group collapsed-group">
+          <details class="advanced-sync-details">
+            <summary class="advanced-sync-summary">
+              📦 Advanced: Blob Archive Export & Import
+            </summary>
+            <div class="advanced-sync-content">
+              <p class="section-desc">
+                Export chat history snapshot as an independent content-addressed iroh-blob ticket without overwriting your device identity.
+              </p>
+              <button class="btn-secondary" onclick={handleGenerateSyncTicket} disabled={syncLoading}>
+                {syncLoading ? "Exporting blob..." : "Generate Blob Ticket"}
+              </button>
+              {#if syncTicket}
+                <div class="sync-ticket-box">
+                  <div class="sync-stats">
+                    <span>✓ Exported {syncTicket.contacts_count} contacts & {syncTicket.messages_count} messages</span>
+                  </div>
+                  <div class="ticket-row">
+                    <input type="text" class="ticket-input" readonly value={syncTicket.ticket} />
+                    <button class="btn-secondary" onclick={copySyncTicket}>
+                      {copyFeedback ? "Copied! ✓" : "Copy Ticket"}
+                    </button>
+                  </div>
+                </div>
+              {/if}
 
-          {#if syncResult}
-            <div class="sync-success-box">
-              ✓ Successfully synced! Imported {syncResult.contacts_imported} contacts and {syncResult.messages_imported} messages.
+              <div class="import-blob-block">
+                <label for="import-sync-ticket-input" class="input-sublabel">Import Blob History Ticket:</label>
+                <textarea
+                  id="import-sync-ticket-input"
+                  class="sync-textarea"
+                  placeholder="Paste blob ticket here..."
+                  bind:value={importTicketInput}
+                ></textarea>
+                <button
+                  class="btn-secondary"
+                  onclick={handleImportSyncTicket}
+                  disabled={syncLoading || !importTicketInput.trim()}
+                >
+                  {syncLoading ? "Importing..." : "Import Messages from Blob"}
+                </button>
+                {#if syncResult}
+                  <div class="sync-success-box">
+                    ✓ Synced {syncResult.contacts_imported} contacts & {syncResult.messages_imported} messages.
+                  </div>
+                {/if}
+                {#if syncError}
+                  <div class="sync-error-box">
+                    ✕ {syncError}
+                  </div>
+                {/if}
+              </div>
             </div>
-          {/if}
-          {#if syncError}
-            <div class="sync-error-box">
-              ✕ {syncError}
-            </div>
-          {/if}
+          </details>
         </div>
       {/if}
     </div>
@@ -803,18 +1159,6 @@
     font-size: 0.85rem;
   }
 
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
   /* Mic Test & Discord Meter Styles */
   .setting-header-with-action {
     display: flex;
@@ -1016,5 +1360,281 @@
     font-size: 0.74rem;
     color: var(--text-muted);
     font-style: italic;
+  }
+
+  /* QR Code & Device Sync Styles */
+  .sync-grid-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 8px;
+  }
+
+  .sync-card {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .sync-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .sync-card-header h5 {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+  }
+
+  .sync-role-badge {
+    font-size: 0.7rem;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--accent-primary);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: var(--border-width) solid var(--border-color);
+  }
+
+  .card-desc {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .qr-presentation {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .qr-code-svg-wrap {
+    background: #ffffff;
+    padding: 14px;
+    border-radius: 12px;
+    width: 210px;
+    height: 210px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .qr-code-svg-wrap :global(svg) {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .qr-status-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--online-status-color);
+    background: rgba(16, 185, 129, 0.1);
+    padding: 4px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+
+  .pulse-dot-green {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--online-status-color);
+    box-shadow: 0 0 6px var(--online-status-color);
+    animation: pulse 1.2s infinite alternate;
+  }
+
+  .qr-status-expired {
+    font-size: 0.8rem;
+    color: var(--danger-color);
+    text-align: center;
+    background: rgba(239, 68, 68, 0.1);
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+
+  .qr-ticket-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .btn-cancel-sync {
+    background: transparent;
+    color: var(--danger-color);
+    border: var(--border-width) solid var(--danger-color);
+    padding: 7px 12px;
+    border-radius: var(--border-radius);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-cancel-sync:hover {
+    background: var(--danger-color);
+    color: #ffffff;
+  }
+
+  .scan-actions-group {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .scan-btn {
+    width: 100%;
+    padding: 10px 16px;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .camera-preview-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-primary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 10px;
+  }
+
+  .camera-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .camera-close-sm {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+
+  .camera-close-sm:hover {
+    color: var(--text-primary);
+  }
+
+  .camera-viewport {
+    position: relative;
+    width: 100%;
+    height: 170px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #000000;
+  }
+
+  .camera-stream-video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .camera-scan-frame {
+    position: absolute;
+    inset: 18px;
+    border: 2px dashed var(--accent-primary);
+    border-radius: 8px;
+    pointer-events: none;
+    box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.45);
+  }
+
+  .camera-status-text {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+    font-style: italic;
+  }
+
+  .manual-input-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .input-sublabel {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .manual-ticket-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .full-width {
+    width: 100%;
+  }
+
+  .highlight {
+    font-weight: 500;
+    font-size: 0.85rem;
+  }
+
+  .collapsed-group {
+    background: transparent;
+    border-top: var(--border-width) solid var(--border-color);
+    padding-top: 14px;
+    margin-top: 6px;
+  }
+
+  .advanced-sync-details {
+    width: 100%;
+  }
+
+  .advanced-sync-summary {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-weight: 600;
+    user-select: none;
+  }
+
+  .advanced-sync-summary:hover {
+    color: var(--text-primary);
+  }
+
+  .advanced-sync-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 10px;
+    padding-left: 10px;
+    border-left: 2px solid var(--border-color);
+  }
+
+  .import-blob-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 6px;
   }
 </style>

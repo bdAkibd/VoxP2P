@@ -5006,6 +5006,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quick-xml"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6432,6 +6438,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-barcode-scanner"
+version = "2.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b57ad7e6ed3e8927205dade785400d9829b8208f59cfe24324fcb324f61482b2"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "tauri-plugin-opener"
 version = "2.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7153,6 +7173,7 @@ version = "0.1.0"
 dependencies = [
  "audiopus",
  "base64 0.22.1",
+ "blake3",
  "bytes",
  "cpal",
  "data-encoding",
@@ -7164,6 +7185,7 @@ dependencies = [
  "mdns-sd",
  "netdev 0.45.1",
  "nnnoiseless",
+ "qrcode",
  "ringbuf",
  "rusqlite",
  "serde",
@@ -7171,6 +7193,7 @@ dependencies = [
  "socket2",
  "tauri",
  "tauri-build",
+ "tauri-plugin-barcode-scanner",
  "tauri-plugin-opener",
  "tokio",
 ]

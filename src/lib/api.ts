@@ -14,6 +14,10 @@ import type {
   DirectCallRingPayload,
   MessageDeliveredPayload,
   LocalInputLevelPayload,
+  DeviceSyncTicketPayload,
+  DeviceSyncImportResult,
+  SyncHostCompletedPayload,
+  SyncImportCompletedPayload,
 } from "./types";
 
 export const api = {
@@ -202,6 +206,14 @@ export const api = {
     return await invoke<ImportSyncResult>("import_sync_ticket", { ticket });
   },
 
+  async startDeviceSyncHost(): Promise<DeviceSyncTicketPayload> {
+    return await invoke<DeviceSyncTicketPayload>("start_device_sync_host");
+  },
+
+  async importFromSyncQr(qrString: string): Promise<DeviceSyncImportResult> {
+    return await invoke<DeviceSyncImportResult>("import_from_sync_qr", { qrString });
+  },
+
   // Event Listeners
   onAudioLevels(callback: (levels: Record<string, number>) => void): Promise<UnlistenFn> {
     return listen<Record<string, number>>("audio://levels", (event) => {
@@ -254,6 +266,18 @@ export const api = {
 
   onLocalInputLevel(callback: (payload: LocalInputLevelPayload) => void): Promise<UnlistenFn> {
     return listen<LocalInputLevelPayload>("audio://local-input-level", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onSyncHostCompleted(callback: (payload: SyncHostCompletedPayload) => void): Promise<UnlistenFn> {
+    return listen<SyncHostCompletedPayload>("sync://host-completed", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onSyncImportCompleted(callback: (payload: SyncImportCompletedPayload) => void): Promise<UnlistenFn> {
+    return listen<SyncImportCompletedPayload>("sync://import-completed", (event) => {
       callback(event.payload);
     });
   },

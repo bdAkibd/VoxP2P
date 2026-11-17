@@ -103,3 +103,29 @@ export interface LocalInputLevelPayload {
   db: number;
   percent: number;
 }
+
+export interface DeviceSyncTicketPayload {
+  ticket: string;
+  qr_svg: string;
+  expires_in_secs: number;
+}
+
+export interface DeviceSyncImportResult {
+  node_id: string;
+  nickname: string;
+  contacts_imported: number;
+  messages_imported: number;
+}
+
+export interface SyncHostCompletedPayload {
+  nickname: string;
+  node_id: string;
+  timestamp: number;
+}
+
+export interface SyncImportCompletedPayload {
+  node_id: string;
+  nickname: string;
+  contacts_imported: number;
+  messages_imported: number;
+}

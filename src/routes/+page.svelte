@@ -84,6 +84,7 @@
     let unlistenChatReceived: (() => void) | undefined;
     let unlistenChatDelivered: (() => void) | undefined;
     let unlistenIncomingCall: (() => void) | undefined;
+    let unlistenSyncImport: (() => void) | undefined;
 
     api.onAudioLevels((levels) => {
       audioLevels = levels;
@@ -118,6 +119,16 @@
       incomingCall = ring;
     }).then((u) => (unlistenIncomingCall = u));
 
+    api.onSyncImportCompleted((payload) => {
+      api.getMyProfile().then((p) => {
+        profile = p;
+      }).catch(console.error);
+      loadContacts();
+      if (activeChatId) {
+        api.getMessages(activeChatId, 50).then((res) => (messages = res)).catch(console.error);
+      }
+    }).then((u) => (unlistenSyncImport = u));
+
     return () => {
       window.removeEventListener("contextmenu", handleContextMenu);
       unlistenLevels?.();
@@ -127,6 +138,7 @@
       unlistenChatReceived?.();
       unlistenChatDelivered?.();
       unlistenIncomingCall?.();
+      unlistenSyncImport?.();
     };
   });
 
@@ -352,6 +364,9 @@
       bind:currentTheme
       onClose={() => (showSettingsModal = false)}
       onSyncCompleted={() => {
+        api.getMyProfile().then((p) => {
+          profile = p;
+        }).catch(console.error);
         loadContacts();
         if (activeChatId) {
           api.getMessages(activeChatId, 50).then((res) => (messages = res));

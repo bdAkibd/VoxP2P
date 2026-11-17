@@ -15,6 +15,8 @@ pub const EVENT_FILE_TRANSFER: &str = "voxp2p://file-transfer";
 pub const EVENT_TRANSFER_PROGRESS: &str = "transfer://progress";
 pub const EVENT_HOST_CHANGED: &str = "room://host-changed";
 pub const EVENT_PEERS_UPDATED: &str = "room://peers-updated";
+pub const EVENT_SYNC_HOST_COMPLETED: &str = "sync://host-completed";
+pub const EVENT_SYNC_IMPORT_COMPLETED: &str = "sync://import-completed";
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,4 +77,19 @@ pub struct HostChangedPayload {
     pub room_id: String,
     pub old_host_id: String,
     pub new_host_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncHostCompletedPayload {
+    pub nickname: String,
+    pub node_id: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncImportCompletedPayload {
+    pub node_id: String,
+    pub nickname: String,
+    pub contacts_imported: usize,
+    pub messages_imported: usize,
 }

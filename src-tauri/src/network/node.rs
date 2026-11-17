@@ -14,6 +14,7 @@ use iroh_blobs::{store::mem::MemStore, BlobsProtocol};
 use iroh_gossip::net::Gossip;
 
 pub use crate::network::file_transfer::DM_ALPN;
+use crate::network::device_sync::{DynamicSyncHandler, SYNC_ALPN};
 use crate::network::file_transfer::{DirectMessageHandler, DIRECT_MESSAGE_ALPN};
 use crate::network::vpn_bypass::detect_default_physical_interface;
 use crate::storage::db::Database;
@@ -82,6 +83,7 @@ pub struct InnerNodeState {
     pub gossip: Option<Gossip>,
     pub blobs_store: Option<MemStore>,
     pub dm_handler: DynamicDmHandler,
+    pub sync_handler: DynamicSyncHandler,
     pub memory_lookup: MemoryLookup,
     pub secret_key: SecretKey,
     pub profile: LocalProfile,
@@ -93,11 +95,13 @@ pub struct InnerNodeState {
 pub struct NodeManager {
     db: Database,
     state: Arc<RwLock<InnerNodeState>>,
+    sync_handler: DynamicSyncHandler,
 }
 
 impl NodeManager {
     pub fn new(db: Database) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (secret_key, profile) = Self::load_or_create_identity(&db)?;
+        let sync_handler = DynamicSyncHandler::default();
 
         let inner = InnerNodeState {
             status: NodeStatus::Stopped,
@@ -106,6 +110,7 @@ impl NodeManager {
             gossip: None,
             blobs_store: None,
             dm_handler: DynamicDmHandler::default(),
+            sync_handler: sync_handler.clone(),
             memory_lookup: MemoryLookup::new(),
             secret_key,
             profile,
@@ -115,6 +120,7 @@ impl NodeManager {
         Ok(Self {
             db,
             state: Arc::new(RwLock::new(inner)),
+            sync_handler,
         })
     }
 
@@ -188,11 +194,12 @@ impl NodeManager {
         // Initialize iroh-gossip protocol
         let gossip = Gossip::builder().spawn(endpoint.clone());
 
-        // Spawn ALPN router for accepting blobs, gossip, and direct messages
+        // Spawn ALPN router for accepting blobs, gossip, direct messages, and device sync
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs)
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(DIRECT_MESSAGE_ALPN, state.dm_handler.clone())
+            .accept(SYNC_ALPN, state.sync_handler.clone())
             .spawn();
 
         state.endpoint = Some(endpoint);
@@ -202,6 +209,56 @@ impl NodeManager {
         state.status = NodeStatus::Running;
 
         Ok(())
+    }
+
+    pub fn get_sync_handler(&self) -> DynamicSyncHandler {
+        self.sync_handler.clone()
+    }
+
+    pub async fn reload_identity(&self) -> Result<UserProfile, String> {
+        let (new_secret_key, new_profile) = Self::load_or_create_identity(&self.db)
+            .map_err(|e| format!("Failed to load synced identity from DB: {e}"))?;
+
+        let mut state = self.state.write().await;
+        if let Some(router) = state.router.take() {
+            let _ = router.shutdown().await;
+        }
+        if let Some(ep) = state.endpoint.take() {
+            let _ = ep.close().await;
+        }
+        state.status = NodeStatus::Stopped;
+
+        state.secret_key = new_secret_key.clone();
+        state.profile = new_profile.clone();
+
+        let memory_lookup = state.memory_lookup.clone();
+        let builder = Endpoint::builder(presets::N0)
+            .secret_key(new_secret_key)
+            .address_lookup(memory_lookup);
+
+        let endpoint = builder
+            .bind()
+            .await
+            .map_err(|e| format!("Failed to bind new endpoint: {e}"))?;
+
+        let blobs_store = MemStore::new();
+        let blobs = BlobsProtocol::new(&blobs_store, None);
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, blobs)
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .accept(DIRECT_MESSAGE_ALPN, state.dm_handler.clone())
+            .accept(SYNC_ALPN, state.sync_handler.clone())
+            .spawn();
+
+        state.endpoint = Some(endpoint);
+        state.router = Some(router);
+        state.gossip = Some(gossip);
+        state.blobs_store = Some(blobs_store);
+        state.status = NodeStatus::Running;
+
+        Ok(new_profile.into())
     }
 
     pub async fn set_dm_handler(&self, handler: DirectMessageHandler) {

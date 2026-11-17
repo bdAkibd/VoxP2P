@@ -18,6 +18,7 @@ use ipc::commands::{
     get_room_ticket,
     get_saved_themes,
     get_undelivered_messages,
+    import_from_sync_qr,
     import_sync_ticket,
     join_room,
     leave_room,
@@ -40,12 +41,14 @@ use ipc::commands::{
     set_peer_volume,
     set_rnnoise,
     set_vad_threshold,
+    start_device_sync_host,
     start_direct_call,
     sync_devices,
     transfer_host,
     update_profile,
 };
 
+use network::device_sync::DeviceSyncManager;
 use network::file_transfer::FileTransferManager;
 use network::node::NodeManager;
 use network::room::RoomManager;
@@ -53,8 +56,13 @@ use storage::db::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+
+    builder
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -146,11 +154,22 @@ pub fn run() {
             // Start offline queue watcher to automatically flush pending DMs when contacts connect
             ft_manager.start_offline_queue_watcher();
 
+            let sync_manager = DeviceSyncManager::new(
+                node_manager.clone(),
+                db.clone(),
+                app_data_dir.clone(),
+                ft_manager.clone(),
+                audio_manager.clone(),
+                Some(app.handle().clone()),
+                node_manager.get_sync_handler(),
+            );
+
             app.manage(db);
             app.manage(node_manager);
             app.manage(room_manager);
             app.manage(audio_manager);
             app.manage(ft_manager);
+            app.manage(sync_manager);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -190,7 +209,9 @@ pub fn run() {
             save_theme,
             get_saved_themes,
             sync_devices,
-            import_sync_ticket
+            import_sync_ticket,
+            start_device_sync_host,
+            import_from_sync_qr
         ])
 
         .run(tauri::generate_context!())

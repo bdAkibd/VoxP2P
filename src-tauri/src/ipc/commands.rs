@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use tauri::State;
 use crate::audio::{AudioDeviceInfo, AudioDevicesResponse, AudioManager};
+use crate::network::device_sync::{
+    DeviceSyncImportResult, DeviceSyncManager, DeviceSyncTicketPayload,
+};
 use crate::network::file_transfer::{
     AttachFileResponse, DeviceSyncTicket, FileTransferManager, ImportSyncResult,
 };
@@ -442,4 +445,19 @@ pub async fn import_sync_ticket(
     ft_manager: State<'_, Arc<FileTransferManager>>,
 ) -> Result<ImportSyncResult, String> {
     ft_manager.import_sync_ticket(&ticket).await
+}
+
+#[tauri::command]
+pub async fn start_device_sync_host(
+    sync_manager: State<'_, DeviceSyncManager>,
+) -> Result<DeviceSyncTicketPayload, String> {
+    sync_manager.start_device_sync_host().await
+}
+
+#[tauri::command]
+pub async fn import_from_sync_qr(
+    qr_string: String,
+    sync_manager: State<'_, DeviceSyncManager>,
+) -> Result<DeviceSyncImportResult, String> {
+    sync_manager.import_from_sync_qr(&qr_string).await
 }
