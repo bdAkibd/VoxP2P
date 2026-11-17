@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { UserProfile, Contact, RoomState, Message } from "$lib/types";
+  import type { UserProfile, Contact, RoomState, Message, DirectCallRingPayload } from "$lib/types";
   import { initTheme, type ThemeConfig } from "$lib/theme";
   import { api } from "$lib/api";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -19,6 +19,7 @@
   let isDeafened = $state<boolean>(false);
   let showSettingsModal = $state<boolean>(false);
   let isMobileDrawerOpen = $state<boolean>(false);
+  let incomingCall = $state<DirectCallRingPayload | null>(null);
 
   // Swipe gesture detection
   let touchStartX = 0;
@@ -74,6 +75,9 @@
     let unlistenHost: (() => void) | undefined;
     let unlistenPeers: (() => void) | undefined;
     let unlistenChat: (() => void) | undefined;
+    let unlistenChatReceived: (() => void) | undefined;
+    let unlistenChatDelivered: (() => void) | undefined;
+    let unlistenIncomingCall: (() => void) | undefined;
 
     api.onAudioLevels((levels) => {
       audioLevels = levels;
@@ -93,20 +97,29 @@
     }).then((u) => (unlistenPeers = u));
 
     api.onChatMessage((msg) => {
-      const idx = messages.findIndex((m) => m.id === msg.id);
-      if (idx !== -1) {
-        messages[idx] = msg;
-        messages = [...messages];
-      } else if (msg.chat_id === activeChatId || msg.sender_id === activeChatId) {
-        messages = [...messages, msg];
-      }
+      handleIncomingMessage(msg);
     }).then((u) => (unlistenChat = u));
+
+    api.onChatMessageReceived((msg) => {
+      handleIncomingMessage(msg);
+    }).then((u) => (unlistenChatReceived = u));
+
+    api.onChatMessageDelivered((payload) => {
+      handleMessageDelivered(payload.message_id);
+    }).then((u) => (unlistenChatDelivered = u));
+
+    api.onIncomingCall((ring) => {
+      incomingCall = ring;
+    }).then((u) => (unlistenIncomingCall = u));
 
     return () => {
       unlistenLevels?.();
       unlistenHost?.();
       unlistenPeers?.();
       unlistenChat?.();
+      unlistenChatReceived?.();
+      unlistenChatDelivered?.();
+      unlistenIncomingCall?.();
     };
   });
 
@@ -125,6 +138,43 @@
     } catch (err) {
       console.error("Failed to load contacts:", err);
     }
+  }
+
+  function handleIncomingMessage(msg: Message) {
+    const idx = messages.findIndex((m) => m.id === msg.id);
+    if (idx !== -1) {
+      messages[idx] = msg;
+      messages = [...messages];
+    } else if (msg.chat_id === activeChatId || msg.sender_id === activeChatId) {
+      messages = [...messages, msg];
+    }
+  }
+
+  function handleMessageDelivered(messageId: string) {
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx !== -1) {
+      messages[idx].delivered = 1;
+      messages = [...messages];
+    }
+  }
+
+  function getContactName(nodeId: string): string {
+    const found = contacts.find((c) => c.node_id === nodeId);
+    if (found && found.nickname) return found.nickname;
+    return nodeId.length > 12 ? `${nodeId.slice(0, 8)}...` : nodeId;
+  }
+
+  function handleAcceptCall() {
+    if (!incomingCall) return;
+    const ticket = incomingCall.room_ticket;
+    const caller = incomingCall.caller_id;
+    incomingCall = null;
+    handleJoinRoom(ticket);
+    activeChatId = caller;
+  }
+
+  function handleDeclineCall() {
+    incomingCall = null;
   }
 
   async function handleJoinRoom(roomId: string) {
@@ -254,7 +304,7 @@
         >
           <span class="live-dot pulse"></span>
           <span class="banner-title">
-            🔊 In Voice Room: <strong>{roomState.room_id}</strong>
+            🔊 {roomState.room_id.startsWith("call_") ? "1-on-1 Call" : "In Voice Room"}: <strong>{roomState.room_id}</strong>
           </span>
           <span class="banner-peer-count">
             ({roomState.peers.length} active {roomState.peers.length === 1 ? "peer" : "peers"})
@@ -301,6 +351,27 @@
         }
       }}
     />
+  {/if}
+  <!-- Incoming 1-on-1 Call Overlay Modal -->
+  {#if incomingCall}
+    <div class="incoming-call-overlay" role="dialog" aria-modal="true" tabindex="-1">
+      <div class="incoming-call-card">
+        <div class="call-pulse-animation">
+          <div class="call-avatar-icon">📞</div>
+        </div>
+        <h3 class="incoming-title">Incoming 1-on-1 Call</h3>
+        <p class="caller-name">From: <strong>{getContactName(incomingCall.caller_id)}</strong></p>
+        <span class="call-badge">Direct Encrypted P2P Voice</span>
+        <div class="incoming-call-actions">
+          <button class="call-action-btn decline-btn" onclick={handleDeclineCall}>
+            ✕ Decline
+          </button>
+          <button class="call-action-btn accept-btn" onclick={handleAcceptCall}>
+            ✓ Accept
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 </main>
 
@@ -513,5 +584,134 @@
       font-size: 0.9rem;
       color: var(--text-primary);
     }
+  }
+
+  .incoming-call-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+    backdrop-filter: blur(4px);
+  }
+
+  .incoming-call-card {
+    background: var(--bg-secondary);
+    border: var(--border-width) solid var(--accent-primary);
+    border-radius: calc(var(--border-radius) * 1.5);
+    padding: 32px 36px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+    max-width: 90vw;
+    width: 360px;
+    text-align: center;
+    animation: scale-up 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes scale-up {
+    0% {
+      opacity: 0;
+      transform: scale(0.9);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .call-pulse-animation {
+    width: 76px;
+    height: 76px;
+    border-radius: 50%;
+    background: rgba(79, 70, 229, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: ring-pulse 1.8s infinite;
+  }
+
+  @keyframes ring-pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.6);
+    }
+    70% {
+      box-shadow: 0 0 0 18px rgba(79, 70, 229, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(79, 70, 229, 0);
+    }
+  }
+
+  .call-avatar-icon {
+    font-size: 2.2rem;
+  }
+
+  .incoming-title {
+    margin: 4px 0 0 0;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .caller-name {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--text-muted);
+  }
+
+  .caller-name strong {
+    color: var(--text-primary);
+  }
+
+  .call-badge {
+    background: var(--bg-tertiary);
+    color: var(--online-status-color);
+    font-size: 0.75rem;
+    padding: 3px 10px;
+    border-radius: var(--border-radius);
+    border: var(--border-width) solid var(--border-color);
+  }
+
+  .incoming-call-actions {
+    display: flex;
+    gap: 16px;
+    margin-top: 14px;
+    width: 100%;
+  }
+
+  .call-action-btn {
+    flex: 1;
+    padding: 10px 16px;
+    border-radius: var(--border-radius);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.15s ease;
+  }
+
+  .decline-btn {
+    background: var(--bg-tertiary);
+    color: var(--danger-color);
+    border: var(--border-width) solid var(--danger-color);
+  }
+
+  .decline-btn:hover {
+    background: var(--danger-color);
+    color: #ffffff;
+  }
+
+  .accept-btn {
+    background: var(--voice-speaking-ring);
+    color: #ffffff;
+  }
+
+  .accept-btn:hover {
+    filter: brightness(1.1);
   }
 </style>

@@ -122,8 +122,8 @@
         <div class="room-info">
           <span class="room-icon">🔊</span>
           <div class="room-details">
-            <span class="room-name">{roomState.room_id}</span>
-            <span class="room-meta">{roomState.peers.length} connected</span>
+            <span class="room-name">{roomState.room_id.startsWith("call_") ? "1-on-1 Direct Call" : roomState.room_id}</span>
+            <span class="room-meta">{roomState.room_id.startsWith("call_") ? "Private 2-Peer Call" : `${roomState.peers.length} connected`}</span>
           </div>
         </div>
         <button

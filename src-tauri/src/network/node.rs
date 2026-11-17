@@ -13,6 +13,7 @@ pub type NodeAddr = EndpointAddr;
 use iroh_blobs::{store::mem::MemStore, BlobsProtocol};
 use iroh_gossip::net::Gossip;
 
+pub use crate::network::file_transfer::DM_ALPN;
 use crate::network::file_transfer::{DirectMessageHandler, DIRECT_MESSAGE_ALPN};
 use crate::network::vpn_bypass::detect_default_physical_interface;
 use crate::storage::db::Database;

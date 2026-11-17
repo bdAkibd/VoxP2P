@@ -7,6 +7,9 @@ pub const EVENT_AUDIO_LEVELS: &str = "audio://levels";
 pub const EVENT_ROOM_STATE: &str = "voxp2p://room-state";
 
 pub const EVENT_CHAT_MESSAGE: &str = "voxp2p://chat-message";
+pub const EVENT_CHAT_MESSAGE_RECEIVED: &str = "chat://message-received";
+pub const EVENT_CHAT_MESSAGE_DELIVERED: &str = "chat://message-delivered";
+pub const EVENT_CALL_INCOMING_RING: &str = "call://incoming-ring";
 pub const EVENT_FILE_TRANSFER: &str = "voxp2p://file-transfer";
 pub const EVENT_TRANSFER_PROGRESS: &str = "transfer://progress";
 pub const EVENT_HOST_CHANGED: &str = "room://host-changed";
@@ -28,6 +31,17 @@ pub struct RoomStatePayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessagePayload {
     pub message: ChatMessage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageDeliveredPayload {
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectCallRingPayload {
+    pub caller_id: String,
+    pub room_ticket: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

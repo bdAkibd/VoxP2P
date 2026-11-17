@@ -178,18 +178,30 @@ pub async fn start_direct_call(
     recipient_node_id: String,
     room_manager: State<'_, RoomManager>,
     ft_manager: State<'_, Arc<FileTransferManager>>,
+    node_manager: State<'_, NodeManager>,
 ) -> Result<RoomState, String> {
-    let short_id = if recipient_node_id.len() >= 8 {
-        &recipient_node_id[..8]
+    let local_id = node_manager.get_node_id().await;
+    let (first, second) = if local_id < recipient_node_id {
+        (&local_id, &recipient_node_id)
     } else {
-        &recipient_node_id
+        (&recipient_node_id, &local_id)
     };
-    let call_room_name = format!("call_{}", short_id);
+    let short1 = if first.len() >= 8 { &first[..8] } else { first };
+    let short2 = if second.len() >= 8 { &second[..8] } else { second };
+    let call_room_name = format!("call_{}_{}", short1, short2);
+
     let session = room_manager.create_or_join_room(&call_room_name, None).await;
     let st = session.state.read().await.clone();
 
-    // If ticket was generated, send invite directly to contact over QUIC DM
+    // If ticket was generated, send DirectCallRing over DM_ALPN to contact
     if let Some(ref ticket) = st.ticket {
+        let ring = crate::network::file_transfer::DmPayload::DirectCallRing {
+            caller_id: local_id.clone(),
+            room_ticket: ticket.clone(),
+        };
+        let _ = ft_manager.send_direct_call_ring(&recipient_node_id, ring).await;
+
+        // Also queue DM chat invite message for offline/fallback access
         let invite_msg = format!("📞 Incoming 1-on-1 Call: {}", ticket);
         let _ = ft_manager
             .send_direct_message(&recipient_node_id, &invite_msg, None, None)

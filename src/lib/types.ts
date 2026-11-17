@@ -89,3 +89,12 @@ export interface ImportSyncResult {
   contacts_imported: number;
   messages_imported: number;
 }
+
+export interface DirectCallRingPayload {
+  caller_id: string;
+  room_ticket: string;
+}
+
+export interface MessageDeliveredPayload {
+  message_id: string;
+}

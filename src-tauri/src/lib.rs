@@ -93,6 +93,7 @@ pub fn run() {
                         );
                     })
                 }),
+                Some(app.handle().clone()),
             );
 
             // Register DM handler on node manager

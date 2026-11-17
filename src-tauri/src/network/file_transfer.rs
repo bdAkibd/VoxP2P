@@ -21,7 +21,8 @@ pub use crate::network::room::ChatMessageCallback;
 use crate::storage::db::Database;
 use crate::storage::models::Message;
 
-pub const DIRECT_MESSAGE_ALPN: &[u8] = b"voxp2p/dm/1";
+pub const DM_ALPN: &[u8] = b"/p2pchat/dm/1";
+pub const DIRECT_MESSAGE_ALPN: &[u8] = DM_ALPN;
 
 pub type TransferProgressCallback = Arc<dyn Fn(&TransferProgressPayload) + Send + Sync>;
 
@@ -71,9 +72,63 @@ pub struct ImportSyncResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum DirectMessageEnvelope {
-    Message(Message),
-    Ack { message_id: String },
+pub enum DmPayload {
+    #[serde(alias = "Message")]
+    DirectMessage {
+        #[serde(flatten)]
+        message: Message,
+    },
+    #[serde(alias = "Ack")]
+    DeliveryAck {
+        message_id: String,
+    },
+    ProfileHandshake {
+        nickname: String,
+        avatar_hash: Option<String>,
+    },
+    DirectCallRing {
+        caller_id: String,
+        room_ticket: String,
+    },
+}
+
+pub type DirectMessageEnvelope = DmPayload;
+
+/// Writes a 4-byte big-endian length prefix followed by the JSON-encoded payload.
+pub async fn write_framed_payload<T: Serialize>(
+    send: &mut iroh::endpoint::SendStream,
+    payload: &T,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let data = serde_json::to_vec(payload)?;
+    let len = (data.len() as u32).to_be_bytes();
+    send.write_all(&len).await?;
+    send.write_all(&data).await?;
+    let _ = send.finish();
+    Ok(())
+}
+
+/// Reads a 4-byte big-endian length prefix followed by the framed JSON payload.
+/// Falls back to raw JSON stream reading if raw JSON (starting with '{') is received.
+pub async fn read_framed_payload(
+    recv: &mut iroh::endpoint::RecvStream,
+) -> Result<DmPayload, Box<dyn std::error::Error + Send + Sync>> {
+    let mut prefix = [0u8; 4];
+    recv.read_exact(&mut prefix).await?;
+    if prefix[0] == b'{' {
+        let rest = recv.read_to_end(65536).await?;
+        let mut full = prefix.to_vec();
+        full.extend_from_slice(&rest);
+        let payload = serde_json::from_slice::<DmPayload>(&full)?;
+        return Ok(payload);
+    }
+    let len = u32::from_be_bytes(prefix) as usize;
+    if len > 10 * 1024 * 1024 {
+        return Err("Payload too large".into());
+    }
+    let mut buf = vec![0u8; len];
+    recv.read_exact(&mut buf).await?;
+    let payload = serde_json::from_slice::<DmPayload>(&buf)?;
+    Ok(payload)
 }
 
 /// Detects standard MIME types based on file extension.
@@ -110,6 +165,7 @@ pub fn detect_mime_type(filename: &str) -> String {
 pub struct DirectMessageHandler {
     db: Database,
     chat_cb: Option<ChatMessageCallback>,
+    app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
 }
 
 impl fmt::Debug for DirectMessageHandler {
@@ -125,31 +181,62 @@ impl ProtocolHandler for DirectMessageHandler {
     ) -> impl Future<Output = Result<(), AcceptError>> + Send {
         let db = self.db.clone();
         let chat_cb = self.chat_cb.clone();
+        let app_handle = self.app_handle.clone();
 
         async move {
             while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-                if let Ok(buf) = recv.read_to_end(65536).await {
-                    if let Ok(envelope) = serde_json::from_slice::<DirectMessageEnvelope>(&buf) {
-                        match envelope {
-                            DirectMessageEnvelope::Message(mut msg) => {
-                                msg.delivered = 1;
-                                let _ = db.insert_message(&msg);
+                if let Ok(payload) = read_framed_payload(&mut recv).await {
+                    match payload {
+                        DmPayload::DirectMessage { mut message } => {
+                            message.delivered = 1;
+                            let _ = db.insert_message(&message);
 
-                                // Send Ack back to sender
-                                let ack = DirectMessageEnvelope::Ack {
-                                    message_id: msg.id.clone(),
-                                };
-                                if let Ok(ack_bytes) = serde_json::to_vec(&ack) {
-                                    let _ = send.write_all(&ack_bytes).await;
-                                    let _ = send.finish();
-                                }
-
-                                if let Some(ref cb) = chat_cb {
-                                    cb(&msg);
-                                }
+                            if let Some(ref app) = *app_handle.read().await {
+                                use tauri::Emitter;
+                                let _ = app.emit(crate::ipc::events::EVENT_CHAT_MESSAGE_RECEIVED, &message);
+                                let _ = app.emit(
+                                    crate::ipc::events::EVENT_CHAT_MESSAGE,
+                                    crate::ipc::events::ChatMessagePayload {
+                                        message: message.clone(),
+                                    },
+                                );
                             }
-                            DirectMessageEnvelope::Ack { message_id } => {
-                                let _ = db.mark_message_delivered(&message_id);
+
+                            if let Some(ref cb) = chat_cb {
+                                cb(&message);
+                            }
+
+                            // Send DeliveryAck back to sender on the same bi-stream
+                            let ack = DmPayload::DeliveryAck {
+                                message_id: message.id.clone(),
+                            };
+                            let _ = write_framed_payload(&mut send, &ack).await;
+                        }
+                        DmPayload::DeliveryAck { message_id } => {
+                            let _ = db.mark_message_delivered(&message_id);
+                            if let Some(ref app) = *app_handle.read().await {
+                                use tauri::Emitter;
+                                let _ = app.emit(
+                                    crate::ipc::events::EVENT_CHAT_MESSAGE_DELIVERED,
+                                    crate::ipc::events::MessageDeliveredPayload {
+                                        message_id: message_id.clone(),
+                                    },
+                                );
+                            }
+                        }
+                        DmPayload::ProfileHandshake { .. } => {
+                            // Profile handshake handled
+                        }
+                        DmPayload::DirectCallRing { caller_id, room_ticket } => {
+                            if let Some(ref app) = *app_handle.read().await {
+                                use tauri::Emitter;
+                                let _ = app.emit(
+                                    crate::ipc::events::EVENT_CALL_INCOMING_RING,
+                                    crate::ipc::events::DirectCallRingPayload {
+                                        caller_id,
+                                        room_ticket,
+                                    },
+                                );
                             }
                         }
                     }
@@ -172,12 +259,14 @@ pub struct FileTransferManager {
     transfers: Arc<RwLock<HashMap<String, BlobTransferProgress>>>,
     progress_cb: Option<TransferProgressCallback>,
     chat_cb: Option<ChatMessageCallback>,
+    app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
     offline_watcher_cancel: Arc<AtomicBool>,
+    outbox_notify: Arc<tokio::sync::Notify>,
 }
 
 impl FileTransferManager {
     pub fn new(db: Database, app_data_dir: PathBuf) -> Arc<Self> {
-        Self::with_callbacks(db, app_data_dir, None, None)
+        Self::with_callbacks(db, app_data_dir, None, None, None)
     }
 
     pub fn with_callbacks(
@@ -185,6 +274,7 @@ impl FileTransferManager {
         app_data_dir: PathBuf,
         progress_cb: Option<TransferProgressCallback>,
         chat_cb: Option<ChatMessageCallback>,
+        app_handle: Option<tauri::AppHandle>,
     ) -> Arc<Self> {
         let avatars_dir = app_data_dir.join("avatars");
         std::fs::create_dir_all(&avatars_dir).ok();
@@ -198,8 +288,14 @@ impl FileTransferManager {
             transfers: Arc::new(RwLock::new(HashMap::new())),
             progress_cb,
             chat_cb,
+            app_handle: Arc::new(RwLock::new(app_handle)),
             offline_watcher_cancel: Arc::new(AtomicBool::new(false)),
+            outbox_notify: Arc::new(tokio::sync::Notify::new()),
         })
+    }
+
+    pub async fn set_app_handle(&self, app_handle: tauri::AppHandle) {
+        *self.app_handle.write().await = Some(app_handle);
     }
 
     pub async fn set_endpoint_and_store(
@@ -217,6 +313,7 @@ impl FileTransferManager {
         DirectMessageHandler {
             db: self.db.clone(),
             chat_cb: self.chat_cb.clone(),
+            app_handle: self.app_handle.clone(),
         }
     }
 
@@ -271,7 +368,6 @@ impl FileTransferManager {
             hash_str.clone()
         };
 
-
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -281,7 +377,7 @@ impl FileTransferManager {
         let msg_id = format!("msg_{}_{}", local_id, now);
         let message_text = text.unwrap_or_default();
 
-        let mut msg = Message {
+        let msg = Message {
             id: msg_id.clone(),
             chat_id: target_chat.clone(),
             sender_id: local_id,
@@ -292,19 +388,17 @@ impl FileTransferManager {
             delivered: 0,
         };
 
-        if PublicKey::from_str(&target_chat).is_ok() {
-            let delivered = self.try_send_quic_dm(&target_chat, &msg).await;
-            msg.delivered = if delivered { 1 } else { 0 };
-        } else {
-            msg.delivered = 1;
-        }
-
         // Save in local SQLite DB
         let _ = self.db.insert_message(&msg);
 
         // If registered, invoke chat callback
         if let Some(ref cb) = self.chat_cb {
             cb(&msg);
+        }
+
+        // Trigger immediate outbox sync if direct recipient
+        if PublicKey::from_str(&target_chat).is_ok() {
+            self.outbox_notify.notify_waiters();
         }
 
         Ok(AttachFileResponse {
@@ -319,8 +413,9 @@ impl FileTransferManager {
         })
     }
 
-    /// Sends a 1-on-1 direct message via bi-directional QUIC stream.
-    /// If peer is offline, stores in SQLite with `delivered = 0` for subsequent offline queue flush.
+    /// Sends a 1-on-1 direct message via Briar-style outbox.
+    /// Inserts into SQLite with `delivered = 0` (NEVER set `delivered = 1` before receiving a network `DeliveryAck`!)
+    /// and immediately wakes up the outbox sync worker.
     pub async fn send_direct_message(
         &self,
         recipient_node_id: &str,
@@ -335,7 +430,7 @@ impl FileTransferManager {
         let local_id = self.local_node_id.read().await.clone();
         let msg_id = format!("dm_{}_{}", local_id, now);
 
-        let mut msg = Message {
+        let msg = Message {
             id: msg_id,
             chat_id: recipient_node_id.to_string(),
             sender_id: local_id,
@@ -346,78 +441,46 @@ impl FileTransferManager {
             delivered: 0,
         };
 
-        // Try direct delivery over QUIC
-        let delivered = self.try_send_quic_dm(recipient_node_id, &msg).await;
-        if delivered {
-            msg.delivered = 1;
-        }
-
-        // Save to SQLite (either delivered=1 or delivered=0 in offline queue)
+        // Insert into SQLite with delivered = 0
         self.db.insert_message(&msg).map_err(|e| e.to_string())?;
 
         if let Some(ref cb) = self.chat_cb {
             cb(&msg);
         }
 
+        // Trigger the outbox sync worker immediately
+        self.outbox_notify.notify_waiters();
+
         Ok(msg)
     }
 
-    /// Internal attempt to deliver a message over a bi-directional QUIC stream and wait for Ack.
-    async fn try_send_quic_dm(&self, recipient_node_id: &str, msg: &Message) -> bool {
+    /// Sends a direct call ring request over `DM_ALPN` to initiate a private 1-on-1 call.
+    pub async fn send_direct_call_ring(
+        &self,
+        recipient_node_id: &str,
+        ring: DmPayload,
+    ) -> Result<(), String> {
         let endpoint = match &*self.endpoint.read().await {
             Some(ep) => ep.clone(),
-            None => return false,
+            None => return Err("Endpoint not ready".into()),
         };
 
-        let target_pk = match PublicKey::from_str(recipient_node_id) {
-            Ok(pk) => pk,
-            Err(_) => return false,
-        };
-
+        let target_pk = PublicKey::from_str(recipient_node_id).map_err(|e| e.to_string())?;
         let addr = EndpointAddr::new(target_pk);
 
-        // Attempt connect with 3-second timeout
-        let conn = match tokio::time::timeout(
-            Duration::from_millis(3000),
-            endpoint.connect(addr, DIRECT_MESSAGE_ALPN),
+        let conn = tokio::time::timeout(
+            Duration::from_millis(4000),
+            endpoint.connect(addr, DM_ALPN),
         )
         .await
-        {
-            Ok(Ok(c)) => c,
-            _ => return false,
-        };
+        .map_err(|_| "Connection timed out".to_string())?
+        .map_err(|e| format!("Failed to connect to peer: {e}"))?;
 
-        let (mut send, mut recv) = match conn.open_bi().await {
-            Ok(bi) => bi,
-            Err(_) => return false,
-        };
-
-        let envelope = DirectMessageEnvelope::Message(msg.clone());
-        let data = match serde_json::to_vec(&envelope) {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
-
-        if send.write_all(&data).await.is_err() || send.finish().is_err() {
-            return false;
-        }
-
-        // Await Ack
-        if let Ok(Ok(ack_buf)) = tokio::time::timeout(
-            Duration::from_millis(3000),
-            recv.read_to_end(1024),
-        )
-        .await
-        {
-            if let Ok(DirectMessageEnvelope::Ack { message_id }) =
-                serde_json::from_slice::<DirectMessageEnvelope>(&ack_buf)
-            {
-                return message_id == msg.id;
-            }
-        }
-
-
-        false
+        let (mut send, _recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+        write_framed_payload(&mut send, &ring)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Flushes any pending offline messages queued for `recipient_node_id`.
@@ -431,45 +494,129 @@ impl FileTransferManager {
             return Ok(0);
         }
 
-        let mut flushed = 0;
-        for mut msg in pending {
-            if self.try_send_quic_dm(recipient_node_id, &msg).await {
-                let _ = self.db.mark_message_delivered(&msg.id);
-                msg.delivered = 1;
-                if let Some(ref cb) = self.chat_cb {
-                    cb(&msg);
-                }
-                flushed += 1;
-            } else {
-                // Peer is currently unreachable; leave remaining in queue
+        self.flush_contact_outbox(recipient_node_id, pending).await
+    }
+
+    /// Attempts to deliver a list of queued messages for a specific contact over QUIC `DM_ALPN`.
+    pub async fn flush_contact_outbox(
+        &self,
+        recipient_node_id: &str,
+        messages: Vec<Message>,
+    ) -> Result<usize, String> {
+        let endpoint = match &*self.endpoint.read().await {
+            Some(ep) => ep.clone(),
+            None => return Err("Endpoint not ready".into()),
+        };
+
+        let target_pk = match PublicKey::from_str(recipient_node_id) {
+            Ok(pk) => pk,
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let addr = EndpointAddr::new(target_pk);
+
+        let conn = match tokio::time::timeout(
+            Duration::from_millis(4000),
+            endpoint.connect(addr, DM_ALPN),
+        )
+        .await
+        {
+            Ok(Ok(c)) => c,
+            _ => return Err("Contact unreachable".into()),
+        };
+
+        let mut delivered_count = 0;
+        for mut msg in messages {
+            let (mut send, mut recv) = match conn.open_bi().await {
+                Ok(bi) => bi,
+                Err(_) => break,
+            };
+
+            let payload = DmPayload::DirectMessage {
+                message: msg.clone(),
+            };
+
+            if write_framed_payload(&mut send, &payload).await.is_err() {
                 break;
+            }
+
+            let ack_res = tokio::time::timeout(
+                Duration::from_millis(4000),
+                read_framed_payload(&mut recv),
+            )
+            .await;
+
+            match ack_res {
+                Ok(Ok(DmPayload::DeliveryAck { message_id })) if message_id == msg.id => {
+                    let _ = self.db.mark_message_delivered(&msg.id);
+                    msg.delivered = 1;
+                    delivered_count += 1;
+
+                    if let Some(ref app) = *self.app_handle.read().await {
+                        use tauri::Emitter;
+                        let _ = app.emit(
+                            crate::ipc::events::EVENT_CHAT_MESSAGE_DELIVERED,
+                            crate::ipc::events::MessageDeliveredPayload {
+                                message_id: msg.id.clone(),
+                            },
+                        );
+                    }
+
+                    if let Some(ref cb) = self.chat_cb {
+                        cb(&msg);
+                    }
+                }
+                _ => {
+                    // Ack not received or error; stop sending to this recipient for this tick
+                    break;
+                }
             }
         }
 
-        Ok(flushed)
+        Ok(delivered_count)
     }
 
-    /// Spawns the background watcher that checks offline messages and automatically
-    /// flushes them when contacts come online.
+    /// Queries SQLite for contacts with `delivered = 0` messages and synchronizes them.
+    pub async fn sync_outbox(&self) {
+        let undelivered = match self.db.get_all_undelivered_messages() {
+            Ok(msgs) => msgs,
+            Err(_) => return,
+        };
+        if undelivered.is_empty() {
+            return;
+        }
+
+        let mut recipient_map: HashMap<String, Vec<Message>> = HashMap::new();
+        for msg in undelivered {
+            if PublicKey::from_str(&msg.chat_id).is_ok() {
+                recipient_map.entry(msg.chat_id.clone()).or_default().push(msg);
+            }
+        }
+
+        for (recipient, messages) in recipient_map {
+            let _ = self.flush_contact_outbox(&recipient, messages).await;
+        }
+    }
+
+    /// Spawns the Briar-style outbox sync worker that runs every 5 seconds (and is triggered immediately on `send_dm`).
     pub fn start_offline_queue_watcher(self: &Arc<Self>) {
         let cancel = self.offline_watcher_cancel.clone();
+        let notify = self.outbox_notify.clone();
         let this = self.clone();
 
         let task_fn = async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(3500));
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
             while !cancel.load(Ordering::Acquire) {
-                interval.tick().await;
-
-                if let Ok(undelivered) = this.db.get_all_undelivered_messages() {
-                    let mut recipient_set = std::collections::HashSet::new();
-                    for msg in undelivered {
-                        recipient_set.insert(msg.chat_id);
-                    }
-
-                    for recipient in recipient_set {
-                        let _ = this.flush_undelivered_messages(&recipient).await;
-                    }
+                tokio::select! {
+                    _ = interval.tick() => {},
+                    _ = notify.notified() => {},
                 }
+
+                if cancel.load(Ordering::Acquire) {
+                    break;
+                }
+
+                this.sync_outbox().await;
             }
         };
 

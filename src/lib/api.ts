@@ -11,6 +11,8 @@ import type {
   AttachFileResponse,
   DeviceSyncTicket,
   ImportSyncResult,
+  DirectCallRingPayload,
+  MessageDeliveredPayload,
 } from "./types";
 
 export const api = {
@@ -210,6 +212,24 @@ export const api = {
     return listen<any>("voxp2p://chat-message", (event) => {
       const msg = event.payload?.message || event.payload;
       callback(msg);
+    });
+  },
+
+  onChatMessageReceived(callback: (msg: Message) => void): Promise<UnlistenFn> {
+    return listen<Message>("chat://message-received", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onChatMessageDelivered(callback: (payload: MessageDeliveredPayload) => void): Promise<UnlistenFn> {
+    return listen<MessageDeliveredPayload>("chat://message-delivered", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onIncomingCall(callback: (payload: DirectCallRingPayload) => void): Promise<UnlistenFn> {
+    return listen<DirectCallRingPayload>("call://incoming-ring", (event) => {
+      callback(event.payload);
     });
   },
 
