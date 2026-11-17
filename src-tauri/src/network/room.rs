@@ -157,6 +157,8 @@ pub enum RoomGossipMessage {
         target_node: String,
     },
     ProfileHandshake {
+        #[serde(default)]
+        node_id: String,
         nickname: String,
         avatar_hash: Option<String>,
     },
@@ -823,9 +825,31 @@ impl RoomSession {
                 // Relay route setup/handshake
             }
             RoomGossipMessage::ProfileHandshake {
-                nickname: _,
-                avatar_hash: _,
-            } => {}
+                node_id,
+                nickname,
+                avatar_hash,
+            } => {
+                if !node_id.is_empty() && node_id != self.local_node_id {
+                    let st_clone = {
+                        let mut state = self.state.write().await;
+                        if let Some(peer) = state.get_peer_mut(&node_id) {
+                            peer.nickname = nickname.clone();
+                            peer.avatar_hash = avatar_hash.clone();
+                        }
+                        state.clone()
+                    };
+                    Self::emit_peers_updated(&self.peers_updated_cb, &st_clone);
+                    let _ = self
+                        .db
+                        .handle_profile_handshake(&node_id, &nickname, avatar_hash.as_deref());
+                    if let Some(ref hash) = avatar_hash {
+                        let cb_opt = self.avatar_cb.read().await.clone();
+                        if let Some(cb) = cb_opt {
+                            cb(&node_id, hash);
+                        }
+                    }
+                }
+            }
             RoomGossipMessage::ChatMessage {
                 message_id,
                 sender_id,
@@ -1410,6 +1434,38 @@ impl RoomManager {
             r.broadcast_audio_frame(seq, opus_data).await
         } else {
             Vec::new()
+        }
+    }
+
+    /// Broadcasts an updated profile (nickname and/or avatar_hash) to all peers in the active room.
+    pub async fn broadcast_profile_handshake(&self, nickname: &str, avatar_hash: Option<&str>) {
+        let room = {
+            let inner = self.inner.read().await;
+            inner.current_room.clone()
+        };
+        if let Some(r) = room {
+            r.set_local_profile(nickname.to_string(), avatar_hash.map(|s| s.to_string())).await;
+            let msg = RoomGossipMessage::ProfileHandshake {
+                node_id: r.local_node_id.clone(),
+                nickname: nickname.to_string(),
+                avatar_hash: avatar_hash.map(|s| s.to_string()),
+            };
+            if let Ok(bytes) = msg.to_bytes() {
+                let sender_guard = r.gossip_sender.lock().await;
+                if let Some(ref sender) = *sender_guard {
+                    let _ = sender.broadcast(Bytes::from(bytes)).await;
+                }
+            }
+            // Also update our own peer info in room state and emit to UI
+            let st_clone = {
+                let mut state = r.state.write().await;
+                if let Some(p) = state.get_peer_mut(&r.local_node_id) {
+                    p.nickname = nickname.to_string();
+                    p.avatar_hash = avatar_hash.map(|s| s.to_string());
+                }
+                state.clone()
+            };
+            RoomSession::emit_peers_updated(&r.peers_updated_cb, &st_clone);
         }
     }
 }

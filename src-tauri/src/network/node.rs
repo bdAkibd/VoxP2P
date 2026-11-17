@@ -340,6 +340,19 @@ impl NodeManager {
         Ok(state.profile.clone().into())
     }
 
+    pub async fn update_avatar_hash(
+        &self,
+        avatar_hash: Option<String>,
+    ) -> Result<UserProfile, String> {
+        let mut state = self.state.write().await;
+        self.db
+            .update_profile(&state.profile.nickname, avatar_hash.as_deref())
+            .map_err(|e| e.to_string())?;
+
+        state.profile.avatar_hash = avatar_hash;
+        Ok(state.profile.clone().into())
+    }
+
     pub async fn add_contact(&self, node_id: String) -> Result<Contact, String> {
         // Validate that node_id is a valid Ed25519 public key
         PublicKey::from_str(&node_id)

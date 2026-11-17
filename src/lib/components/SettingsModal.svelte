@@ -6,31 +6,133 @@
     DeviceSyncTicketPayload,
     DeviceSyncImportResult,
     SyncHostCompletedPayload,
+    UserProfile,
   } from "../types";
   import type { ThemeConfig } from "../theme";
   import { api } from "../api";
   import ThemeStudio from "./ThemeStudio.svelte";
+  import AvatarCropperModal from "./AvatarCropperModal.svelte";
   import { scan, Format } from "@tauri-apps/plugin-barcode-scanner";
 
   let {
     currentTheme = $bindable(),
-    initialTab = "audio",
+    initialTab = "account",
     onClose,
     onSyncCompleted,
   }: {
     currentTheme: ThemeConfig;
-    initialTab?: "audio" | "network" | "theme" | "sync";
+    initialTab?: "account" | "audio" | "network" | "theme" | "sync";
     onClose: () => void;
     onSyncCompleted?: () => void;
   } = $props();
 
-  let activeTab = $state<"audio" | "network" | "theme" | "sync">("audio");
+  let activeTab = $state<"account" | "audio" | "network" | "theme" | "sync">("account");
 
   $effect(() => {
     if (initialTab) {
       activeTab = initialTab;
     }
   });
+
+  // Account State
+  let profile = $state<UserProfile | null>(null);
+  let nicknameInput = $state<string>("");
+  let avatarDataUrl = $state<string | null>(null);
+  let isSavingProfile = $state<boolean>(false);
+  let profileSaveSuccess = $state<boolean>(false);
+  let profileError = $state<string | null>(null);
+  let copyNodeIdFeedback = $state<boolean>(false);
+  let fileInputEl = $state<HTMLInputElement | null>(null);
+  let cropperImageSrc = $state<string | null>(null);
+
+  async function loadProfile() {
+    try {
+      const p = await api.getMyProfile();
+      profile = p;
+      nicknameInput = p.nickname;
+      if (p.avatar_hash) {
+        const url = await api.getAvatar(p.avatar_hash);
+        avatarDataUrl = url;
+      } else {
+        avatarDataUrl = null;
+      }
+    } catch (e: any) {
+      console.error("Failed to load profile:", e);
+    }
+  }
+
+  function handleAvatarClick() {
+    fileInputEl?.click();
+  }
+
+  function handleFileSelected(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      cropperImageSrc = reader.result as string;
+      input.value = "";
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function handleCropperApply(bytes: Uint8Array) {
+    try {
+      profileError = null;
+      const updated = await api.updateProfileAvatar(bytes);
+      profile = updated;
+      if (updated.avatar_hash) {
+        const url = await api.getAvatar(updated.avatar_hash);
+        avatarDataUrl = url;
+      }
+      cropperImageSrc = null;
+      onSyncCompleted?.();
+    } catch (err: any) {
+      profileError = err?.toString() || "Failed to update avatar";
+    }
+  }
+
+  async function handleRemoveAvatar() {
+    if (!profile) return;
+    try {
+      profileError = null;
+      const updated = await api.updateProfile(profile.nickname, null);
+      profile = updated;
+      avatarDataUrl = null;
+      onSyncCompleted?.();
+    } catch (err: any) {
+      profileError = err?.toString() || "Failed to remove avatar";
+    }
+  }
+
+  async function handleSaveNickname() {
+    if (!profile || !nicknameInput.trim()) return;
+    isSavingProfile = true;
+    profileError = null;
+    try {
+      const updated = await api.updateProfile(nicknameInput.trim(), profile.avatar_hash);
+      profile = updated;
+      profileSaveSuccess = true;
+      onSyncCompleted?.();
+      setTimeout(() => {
+        profileSaveSuccess = false;
+      }, 2500);
+    } catch (err: any) {
+      profileError = err?.toString() || "Failed to update nickname";
+    } finally {
+      isSavingProfile = false;
+    }
+  }
+
+  function handleCopyNodeId() {
+    if (!profile?.node_id) return;
+    navigator.clipboard.writeText(profile.node_id);
+    copyNodeIdFeedback = true;
+    setTimeout(() => {
+      copyNodeIdFeedback = false;
+    }, 2000);
+  }
 
   // Audio State
   let inputDevices = $state<AudioDeviceInfo[]>([]);
@@ -78,6 +180,8 @@
   let copyFeedback = $state<boolean>(false);
 
   $effect(() => {
+    loadProfile();
+
     // Fetch available audio devices
     api.listAudioDevices().then((res) => {
       inputDevices = res.input_devices || [];
@@ -405,6 +509,13 @@
       <div class="tabs-row">
         <button
           class="tab-btn"
+          class:active={activeTab === "account"}
+          onclick={() => (activeTab = "account")}
+        >
+          👤 Аккаунт
+        </button>
+        <button
+          class="tab-btn"
           class:active={activeTab === "audio"}
           onclick={() => (activeTab = "audio")}
         >
@@ -437,7 +548,128 @@
 
     <!-- Dialog Content Body -->
     <div class="dialog-body">
-      {#if activeTab === "audio"}
+      {#if activeTab === "account"}
+        <div class="settings-group">
+          <h4>👤 Мой аккаунт (My Account)</h4>
+          <p class="section-desc">
+            Настройте ваш P2P профиль. Изменения аватара и имени мгновенно синхронизируются с контактами и участниками комнат.
+          </p>
+
+          {#if profileError}
+            <div class="alert-error">
+              ⚠️ {profileError}
+            </div>
+          {/if}
+
+          <!-- Avatar Section -->
+          <div class="account-avatar-card">
+            <div
+              class="avatar-edit-wrapper"
+              onclick={handleAvatarClick}
+              role="button"
+              tabindex="0"
+              onkeydown={(e) => e.key === "Enter" && handleAvatarClick()}
+              title="Нажмите, чтобы изменить аватар"
+            >
+              <div class="avatar-large-preview">
+                {#if avatarDataUrl}
+                  <img src={avatarDataUrl} alt="Аватар" class="avatar-img-large" />
+                {:else}
+                  <div class="avatar-placeholder-large">
+                    {profile?.nickname ? profile.nickname.slice(0, 1).toUpperCase() : "U"}
+                  </div>
+                {/if}
+              </div>
+              <!-- Hover Overlay (Change Avatar) -->
+              <div class="avatar-hover-overlay">
+                <span class="overlay-icon">📷</span>
+                <span class="overlay-text">Сменить аватар</span>
+              </div>
+            </div>
+
+            <!-- Hidden File Input -->
+            <input
+              type="file"
+              bind:this={fileInputEl}
+              onchange={handleFileSelected}
+              accept="image/png, image/jpeg, image/webp, image/gif"
+              style="display: none;"
+            />
+
+            <div class="avatar-actions-info">
+              <div class="avatar-title">{profile?.nickname || "Пользователь"}</div>
+              <div class="avatar-hint">
+                Поддерживаются PNG, JPG, WEBP или GIF. Кликните для интерактивной обрезки (Steam/Discord стиль).
+              </div>
+              <div class="avatar-btn-row">
+                <button class="btn-secondary-action" onclick={handleAvatarClick}>
+                  📷 Загрузить фото
+                </button>
+                {#if avatarDataUrl || profile?.avatar_hash}
+                  <button class="btn-danger-action" onclick={handleRemoveAvatar}>
+                    🗑️ Удалить аватар
+                  </button>
+                {/if}
+              </div>
+            </div>
+          </div>
+
+          <!-- Nickname Editing -->
+          <div class="setting-item">
+            <label for="profile-nickname-input">Имя пользователя (Никнейм)</label>
+            <div class="nickname-input-row">
+              <input
+                id="profile-nickname-input"
+                type="text"
+                bind:value={nicknameInput}
+                placeholder="Введите никнейм..."
+                maxlength="32"
+                class="account-text-input"
+                onkeydown={(e) => e.key === "Enter" && handleSaveNickname()}
+              />
+              <button
+                class="btn-save-nickname"
+                onclick={handleSaveNickname}
+                disabled={isSavingProfile || !nicknameInput.trim() || nicknameInput.trim() === profile?.nickname}
+              >
+                {#if isSavingProfile}
+                  Сохранение...
+                {:else if profileSaveSuccess}
+                  ✓ Сохранено!
+                {:else}
+                  Сохранить
+                {/if}
+              </button>
+            </div>
+            <span class="item-desc">
+              Ваш публичный псевдоним, отображаемый в звонках и сообщениях.
+            </span>
+          </div>
+
+          <!-- Account ID (NodeId) -->
+          <div class="setting-item">
+            <label for="profile-node-id-val">Уникальный P2P адрес (Node ID)</label>
+            <div class="node-id-badge-card">
+              <div class="node-id-key-icon">🔑</div>
+              <div class="node-id-text-wrap">
+                <code class="node-id-code" id="profile-node-id-val">{profile?.node_id || "Загрузка ID..."}</code>
+                <span class="node-id-caption">Используется для прямого подключения (1-на-1 звонки и Briar DM) без серверов</span>
+              </div>
+              <button
+                class="btn-copy-id"
+                onclick={handleCopyNodeId}
+                title="Копировать NodeId в буфер обмена"
+              >
+                {#if copyNodeIdFeedback}
+                  ✓ Скопировано!
+                {:else}
+                  📋 Копировать ID
+                {/if}
+              </button>
+            </div>
+          </div>
+        </div>
+      {:else if activeTab === "audio"}
         <div class="settings-group">
           <h4>Audio Devices</h4>
 
@@ -856,6 +1088,16 @@
   </div>
 </div>
 
+{#if cropperImageSrc}
+  <AvatarCropperModal
+    imageSrc={cropperImageSrc}
+    onApply={handleCropperApply}
+    onCancel={() => {
+      cropperImageSrc = null;
+    }}
+  />
+{/if}
+
 <style>
   .modal-backdrop {
     position: fixed;
@@ -865,6 +1107,271 @@
     align-items: center;
     justify-content: center;
     z-index: 200;
+  }
+
+  /* Account Tab Styling */
+  .account-avatar-card {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    background: var(--surface-card, var(--bg-secondary));
+    padding: 18px 20px;
+    border-radius: var(--border-radius, 10px);
+    border: var(--border-width) solid var(--border-color);
+    margin-bottom: 20px;
+  }
+
+  .avatar-edit-wrapper {
+    position: relative;
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    overflow: hidden;
+    cursor: pointer;
+    flex-shrink: 0;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    border: 2px solid var(--accent-primary, #6366f1);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .avatar-edit-wrapper:hover,
+  .avatar-edit-wrapper:focus-visible {
+    transform: scale(1.03);
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+    outline: none;
+  }
+
+  .avatar-large-preview {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+  }
+
+  .avatar-img-large {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .avatar-placeholder-large {
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    user-select: none;
+  }
+
+  .avatar-hover-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 17, 23, 0.72);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .avatar-edit-wrapper:hover .avatar-hover-overlay,
+  .avatar-edit-wrapper:focus-visible .avatar-hover-overlay {
+    opacity: 1;
+  }
+
+  .overlay-icon {
+    font-size: 1.3rem;
+    margin-bottom: 2px;
+  }
+
+  .overlay-text {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    text-align: center;
+    padding: 0 6px;
+  }
+
+  .avatar-actions-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .avatar-title {
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .avatar-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .avatar-btn-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+  }
+
+  .btn-secondary-action {
+    padding: 7px 14px;
+    background: var(--bg-tertiary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .btn-secondary-action:hover {
+    background: var(--surface-card, var(--bg-secondary));
+    border-color: var(--accent-primary);
+  }
+
+  .btn-danger-action {
+    padding: 7px 14px;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: 6px;
+    color: #fca5a5;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+
+  .btn-danger-action:hover {
+    background: rgba(239, 68, 68, 0.22);
+  }
+
+  .nickname-input-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 6px;
+  }
+
+  .account-text-input {
+    flex: 1;
+    height: 40px;
+    padding: 0 12px;
+    background: var(--bg-secondary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    transition: border-color 0.15s;
+  }
+
+  .account-text-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+  }
+
+  .btn-save-nickname {
+    height: 40px;
+    padding: 0 18px;
+    background: var(--accent-primary);
+    border: none;
+    border-radius: 6px;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    min-width: 110px;
+    transition: background 0.15s, opacity 0.15s;
+  }
+
+  .btn-save-nickname:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  .btn-save-nickname:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .node-id-badge-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--surface-card, var(--bg-secondary));
+    border: var(--border-width) solid var(--border-color);
+    border-radius: 8px;
+    margin-top: 6px;
+  }
+
+  .node-id-key-icon {
+    font-size: 1.4rem;
+    flex-shrink: 0;
+  }
+
+  .node-id-text-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .node-id-code {
+    font-family: monospace;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    word-break: break-all;
+    background: var(--bg-primary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+  }
+
+  .node-id-caption {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+  }
+
+  .btn-copy-id {
+    height: 38px;
+    padding: 0 14px;
+    background: var(--bg-tertiary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .btn-copy-id:hover {
+    background: var(--surface-card, var(--bg-secondary));
+    border-color: var(--accent-primary);
+  }
+
+  .alert-error {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #fca5a5;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    margin-bottom: 12px;
   }
 
   .settings-dialog {

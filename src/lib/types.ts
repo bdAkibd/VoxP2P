@@ -2,6 +2,7 @@ export interface UserProfile {
   node_id: string;
   nickname: string;
   avatar_hash?: string | null;
+  avatar_data_url?: string | null;
 }
 
 export interface Contact {

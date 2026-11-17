@@ -32,6 +32,15 @@ export const api = {
     });
   },
 
+  async updateProfileAvatar(avatarBytes: number[] | Uint8Array): Promise<UserProfile> {
+    const bytesArray = Array.from(avatarBytes);
+    return await invoke<UserProfile>("update_profile_avatar", { avatarBytes: bytesArray });
+  },
+
+  async getAvatar(avatarHash: string): Promise<string | null> {
+    return await invoke<string | null>("get_avatar", { avatarHash });
+  },
+
   async addContact(nodeId: string): Promise<Contact> {
     return await invoke<Contact>("add_contact", { nodeId });
   },
@@ -279,6 +288,18 @@ export const api = {
   onSyncImportCompleted(callback: (payload: SyncImportCompletedPayload) => void): Promise<UnlistenFn> {
     return listen<SyncImportCompletedPayload>("sync://import-completed", (event) => {
       callback(event.payload);
+    });
+  },
+
+  onProfileUpdated(callback: (p: UserProfile) => void): Promise<UnlistenFn> {
+    return listen<UserProfile>("profile://updated", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onContactsUpdated(callback: () => void): Promise<UnlistenFn> {
+    return listen("contacts://updated", () => {
+      callback();
     });
   },
 };

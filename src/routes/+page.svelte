@@ -101,6 +101,8 @@
     let unlistenChatDelivered: (() => void) | undefined;
     let unlistenIncomingCall: (() => void) | undefined;
     let unlistenSyncImport: (() => void) | undefined;
+    let unlistenProfileUpdated: (() => void) | undefined;
+    let unlistenContactsUpdated: (() => void) | undefined;
 
     api.onAudioLevels((levels) => {
       audioLevels = levels;
@@ -145,6 +147,14 @@
       }
     }).then((u) => (unlistenSyncImport = u));
 
+    api.onProfileUpdated((p) => {
+      profile = p;
+    }).then((u) => (unlistenProfileUpdated = u));
+
+    api.onContactsUpdated(() => {
+      loadContacts();
+    }).then((u) => (unlistenContactsUpdated = u));
+
     return () => {
       window.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("resize", checkViewport);
@@ -156,6 +166,8 @@
       unlistenChatDelivered?.();
       unlistenIncomingCall?.();
       unlistenSyncImport?.();
+      unlistenProfileUpdated?.();
+      unlistenContactsUpdated?.();
     };
   });
 

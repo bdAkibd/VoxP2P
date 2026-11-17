@@ -46,6 +46,8 @@ use ipc::commands::{
     sync_devices,
     transfer_host,
     update_profile,
+    update_profile_avatar,
+    get_avatar,
 };
 
 use network::device_sync::DeviceSyncManager;
@@ -211,7 +213,9 @@ pub fn run() {
             sync_devices,
             import_sync_ticket,
             start_device_sync_host,
-            import_from_sync_qr
+            import_from_sync_qr,
+            update_profile_avatar,
+            get_avatar
         ])
 
         .run(tauri::generate_context!())

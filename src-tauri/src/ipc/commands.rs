@@ -22,8 +22,65 @@ pub async fn update_profile(
     nickname: String,
     avatar_path: Option<String>,
     node_manager: State<'_, NodeManager>,
+    room_manager: State<'_, RoomManager>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<UserProfile, String> {
-    node_manager.update_profile(nickname, avatar_path).await
+    let updated = node_manager.update_profile(nickname, avatar_path).await?;
+    room_manager
+        .broadcast_profile_handshake(&updated.nickname, updated.avatar_hash.as_deref())
+        .await;
+    ft_manager
+        .broadcast_profile_handshake(&updated.nickname, updated.avatar_hash.as_deref())
+        .await;
+
+    use tauri::Emitter;
+    let _ = app_handle.emit("profile://updated", &updated);
+
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn update_profile_avatar(
+    avatar_bytes: Vec<u8>,
+    node_manager: State<'_, NodeManager>,
+    room_manager: State<'_, RoomManager>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+    app_handle: tauri::AppHandle,
+) -> Result<UserProfile, String> {
+    if avatar_bytes.is_empty() {
+        return Err("Avatar bytes cannot be empty".to_string());
+    }
+
+    // 1. Save and import into iroh-blobs & avatars dir
+    let avatar_hash = ft_manager.save_and_import_avatar(&avatar_bytes).await?;
+
+    // 2. Update local profile in SQLite and NodeManager
+    let updated = node_manager.update_avatar_hash(Some(avatar_hash.clone())).await?;
+
+    // 3. Broadcast ProfileHandshake to active room peers
+    room_manager
+        .broadcast_profile_handshake(&updated.nickname, Some(&avatar_hash))
+        .await;
+
+    // 4. Broadcast ProfileHandshake to DM contacts
+    ft_manager
+        .broadcast_profile_handshake(&updated.nickname, Some(&avatar_hash))
+        .await;
+
+    // 5. Emit event to frontend
+    use tauri::Emitter;
+    let _ = app_handle.emit("profile://updated", &updated);
+
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn get_avatar(
+    avatar_hash: String,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<Option<String>, String> {
+    Ok(ft_manager.get_avatar_data_url(&avatar_hash).await)
 }
 
 #[tauri::command]

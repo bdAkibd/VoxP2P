@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr, PublicKey};
@@ -83,6 +84,8 @@ pub enum DmPayload {
         message_id: String,
     },
     ProfileHandshake {
+        #[serde(default)]
+        node_id: Option<String>,
         nickname: String,
         avatar_hash: Option<String>,
     },
@@ -166,6 +169,9 @@ pub struct DirectMessageHandler {
     db: Database,
     chat_cb: Option<ChatMessageCallback>,
     app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
+    app_data_dir: PathBuf,
+    endpoint: Arc<RwLock<Option<Endpoint>>>,
+    blobs_store: Arc<RwLock<Option<MemStore>>>,
 }
 
 impl fmt::Debug for DirectMessageHandler {
@@ -182,6 +188,9 @@ impl ProtocolHandler for DirectMessageHandler {
         let db = self.db.clone();
         let chat_cb = self.chat_cb.clone();
         let app_handle = self.app_handle.clone();
+        let app_data_dir = self.app_data_dir.clone();
+        let endpoint = self.endpoint.clone();
+        let blobs_store = self.blobs_store.clone();
 
         async move {
             while let Ok((mut send, mut recv)) = connection.accept_bi().await {
@@ -224,8 +233,60 @@ impl ProtocolHandler for DirectMessageHandler {
                                 );
                             }
                         }
-                        DmPayload::ProfileHandshake { .. } => {
-                            // Profile handshake handled
+                        DmPayload::ProfileHandshake {
+                            node_id,
+                            nickname,
+                            avatar_hash,
+                        } => {
+                            let peer_id = node_id.unwrap_or_default();
+                            if !peer_id.is_empty() {
+                                let _ = db.handle_profile_handshake(
+                                    &peer_id,
+                                    &nickname,
+                                    avatar_hash.as_deref(),
+                                );
+                                if let Some(ref hash) = avatar_hash {
+                                    let avatar_filename = format!("{hash}.png");
+                                    let cache_path =
+                                        app_data_dir.join("avatars").join(&avatar_filename);
+                                    if !cache_path.exists() {
+                                        let ep_opt = endpoint.read().await.clone();
+                                        let store_opt = blobs_store.read().await.clone();
+                                        if let (Some(ep), Some(store)) = (ep_opt, store_opt) {
+                                            let pid = peer_id.clone();
+                                            let h_str = hash.clone();
+                                            let save_str = cache_path.to_string_lossy().to_string();
+                                            let db_clone = db.clone();
+                                            let app_h = app_handle.clone();
+                                            tauri::async_runtime::spawn(async move {
+                                                if let Ok(pk) = PublicKey::from_str(&pid) {
+                                                    let addr = EndpointAddr::new(pk);
+                                                    if let Ok(conn) = ep.connect(addr, iroh_blobs::ALPN).await {
+                                                        if let Ok(hash_obj) = Hash::from_str(&h_str) {
+                                                            if let Ok((downloaded, _)) = iroh_blobs::get::request::get_blob(conn, hash_obj).bytes_and_stats().await {
+                                                                let _ = store.add_bytes(downloaded.clone()).temp_tag().await;
+                                                                if let Some(parent) = Path::new(&save_str).parent() {
+                                                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                                                }
+                                                                let _ = tokio::fs::write(&save_str, &downloaded).await;
+                                                                let _ = db_clone.handle_profile_handshake(&pid, "", Some(&save_str));
+                                                                if let Some(ref app) = *app_h.read().await {
+                                                                    use tauri::Emitter;
+                                                                    let _ = app.emit("contacts://updated", ());
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                                if let Some(ref app) = *app_handle.read().await {
+                                    use tauri::Emitter;
+                                    let _ = app.emit("contacts://updated", ());
+                                }
+                            }
                         }
                         DmPayload::DirectCallRing { caller_id, room_ticket } => {
                             if let Some(ref app) = *app_handle.read().await {
@@ -314,6 +375,9 @@ impl FileTransferManager {
             db: self.db.clone(),
             chat_cb: self.chat_cb.clone(),
             app_handle: self.app_handle.clone(),
+            app_data_dir: self.app_data_dir.clone(),
+            endpoint: self.endpoint.clone(),
+            blobs_store: self.blobs_store.clone(),
         }
     }
 
@@ -734,6 +798,10 @@ impl FileTransferManager {
             let _ = self
                 .db
                 .handle_profile_handshake(peer_node_id, "", Some(&cache_path.to_string_lossy()));
+            if let Some(ref app) = *self.app_handle.read().await {
+                use tauri::Emitter;
+                let _ = app.emit("contacts://updated", ());
+            }
             return;
         }
 
@@ -747,6 +815,121 @@ impl FileTransferManager {
             let _ = self
                 .db
                 .handle_profile_handshake(peer_node_id, "", Some(&save_str));
+            if let Some(ref app) = *self.app_handle.read().await {
+                use tauri::Emitter;
+                let _ = app.emit("contacts://updated", ());
+            }
+        }
+    }
+
+    /// Saves an avatar image into local `avatars` directory and imports it into `iroh-blobs`,
+    /// returning the BLAKE3 hash string.
+    pub async fn save_and_import_avatar(&self, avatar_bytes: &[u8]) -> Result<String, String> {
+        let blobs_store = {
+            let guard = self.blobs_store.read().await;
+            guard
+                .clone()
+                .ok_or_else(|| "Blobs store not initialized".to_string())?
+        };
+
+        // 1. Add to iroh-blobs store
+        let tag = blobs_store
+            .add_bytes(avatar_bytes.to_vec())
+            .temp_tag()
+            .await
+            .map_err(|e| format!("Failed to import avatar blob into store: {e}"))?;
+        let hash_str = tag.hash().to_string();
+
+        // 2. Save file to app_data_dir/avatars/<hash>.png
+        let avatars_dir = self.app_data_dir.join("avatars");
+        tokio::fs::create_dir_all(&avatars_dir)
+            .await
+            .map_err(|e| format!("Failed to create avatars dir: {e}"))?;
+        let avatar_path = avatars_dir.join(format!("{hash_str}.png"));
+        tokio::fs::write(&avatar_path, avatar_bytes)
+            .await
+            .map_err(|e| format!("Failed to save avatar image: {e}"))?;
+
+        Ok(hash_str)
+    }
+
+    /// Retrieves an avatar image by its BLAKE3 hash from disk or `iroh-blobs` store,
+    /// returning a Base64 Data URL (`data:image/png;base64,...`) for instant rendering.
+    pub async fn get_avatar_data_url(&self, avatar_hash: &str) -> Option<String> {
+        let avatars_dir = self.app_data_dir.join("avatars");
+        let avatar_path = avatars_dir.join(format!("{avatar_hash}.png"));
+
+        let bytes = if avatar_path.exists() {
+            tokio::fs::read(&avatar_path).await.ok()
+        } else if let Some(store) = self.blobs_store.read().await.clone() {
+            if let Ok(hash) = Hash::from_str(avatar_hash) {
+                if let Ok(b) = store.blobs().get_bytes(hash).await {
+                    let _ = tokio::fs::write(&avatar_path, &b).await;
+                    Some(b.to_vec())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        bytes.map(|b| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&b);
+            let mime = if b.starts_with(b"\x89PNG") {
+                "image/png"
+            } else if b.starts_with(b"RIFF") && b.len() >= 12 && &b[8..12] == b"WEBP" {
+                "image/webp"
+            } else if b.starts_with(b"\xFF\xD8\xFF") {
+                "image/jpeg"
+            } else {
+                "image/png"
+            };
+            format!("data:{mime};base64,{b64}")
+        })
+    }
+
+    /// Broadcasts an updated profile (nickname and/or avatar_hash) to all contacts via 1-on-1 DM handshake.
+    pub async fn broadcast_profile_handshake(
+        self: &Arc<Self>,
+        nickname: &str,
+        avatar_hash: Option<&str>,
+    ) {
+        let contacts = match self.db.get_contacts() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        if contacts.is_empty() {
+            return;
+        }
+
+        let local_id = self.local_node_id.read().await.clone();
+        let payload = DmPayload::ProfileHandshake {
+            node_id: Some(local_id),
+            nickname: nickname.to_string(),
+            avatar_hash: avatar_hash.map(|s| s.to_string()),
+        };
+
+        let endpoint_opt = self.endpoint.read().await.clone();
+        let Some(endpoint) = endpoint_opt else { return };
+
+        for contact in contacts {
+            if let Ok(pk) = PublicKey::from_str(&contact.node_id) {
+                let ep = endpoint.clone();
+                let p = payload.clone();
+                tauri::async_runtime::spawn(async move {
+                    let addr = EndpointAddr::new(pk);
+                    if let Ok(conn_res) = tokio::time::timeout(Duration::from_secs(3), ep.connect(addr, DM_ALPN)).await {
+                        if let Ok(conn) = conn_res {
+                            if let Ok((mut send, _recv)) = conn.open_bi().await {
+                                let _ = write_framed_payload(&mut send, &p).await;
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 
