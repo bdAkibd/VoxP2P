@@ -336,4 +336,16 @@ export const api = {
       callback(event.payload);
     });
   },
+
+  onMuteToggled(callback: (isMuted: boolean) => void): Promise<UnlistenFn> {
+    return listen<boolean>("audio://mute-toggled", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onRoomLeft(callback: () => void): Promise<UnlistenFn> {
+    return listen("room://left", () => {
+      callback();
+    });
+  },
 };

@@ -106,6 +106,8 @@
     let unlistenContactsUpdated: (() => void) | undefined;
     let unlistenChatEdited: (() => void) | undefined;
     let unlistenChatDeleted: (() => void) | undefined;
+    let unlistenMuteToggled: (() => void) | undefined;
+    let unlistenRoomLeft: (() => void) | undefined;
 
     api.onAudioLevels((levels) => {
       audioLevels = levels;
@@ -170,6 +172,17 @@
       messages = messages.filter((m) => m.id !== payload.message_id);
     }).then((u) => (unlistenChatDeleted = u));
 
+    api.onMuteToggled((muted) => {
+      isMuted = muted;
+    }).then((u) => (unlistenMuteToggled = u));
+
+    api.onRoomLeft(() => {
+      roomState = null;
+      if (activeChatId.startsWith("room_") || activeChatId.startsWith("call_")) {
+        activeChatId = "lobby";
+      }
+    }).then((u) => (unlistenRoomLeft = u));
+
     return () => {
       window.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("resize", checkViewport);
@@ -185,6 +198,8 @@
       unlistenContactsUpdated?.();
       unlistenChatEdited?.();
       unlistenChatDeleted?.();
+      unlistenMuteToggled?.();
+      unlistenRoomLeft?.();
     };
   });
 

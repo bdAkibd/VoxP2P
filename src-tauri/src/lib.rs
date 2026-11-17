@@ -3,6 +3,86 @@ pub mod ipc;
 pub mod network;
 pub mod storage;
 
+#[cfg(desktop)]
+fn setup_system_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton};
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::Manager;
+    use tauri::Emitter;
+
+    let open_item = MenuItem::with_id(app, "open", "Open VoxP2P", true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let mute_item = MenuItem::with_id(app, "toggle_mute", "Toggle Mute", true, None::<&str>)?;
+    let disconnect_item = MenuItem::with_id(app, "disconnect_call", "Disconnect Call", true, None::<&str>)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+
+    let menu = Menu::with_items(
+        app,
+        &[&open_item, &sep1, &mute_item, &disconnect_item, &sep2, &quit_item],
+    )?;
+
+    let mute_item_clone = mute_item.clone();
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(move |app, event| {
+            match event.id().as_ref() {
+                "open" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+                "toggle_mute" => {
+                    if let Some(audio_manager) = app.try_state::<Arc<AudioManager>>() {
+                        let is_muted = audio_manager.is_muted();
+                        let next_mute = !is_muted;
+                        audio_manager.set_mute(next_mute);
+                        let _ = mute_item_clone.set_text(if next_mute {
+                            "Unmute Microphone"
+                        } else {
+                            "Mute Microphone"
+                        });
+                        let _ = app.emit("audio://mute-toggled", next_mute);
+                    }
+                }
+                "disconnect_call" => {
+                    if let Some(room_manager) = app.try_state::<RoomManager>() {
+                        let rm = room_manager.inner().clone();
+                        tauri::async_runtime::spawn(async move {
+                            rm.leave_room().await;
+                        });
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } = event {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder.build(app)?;
+
+    Ok(())
+}
+
 use std::sync::Arc;
 use tauri::Manager;
 use audio::AudioManager;
@@ -65,6 +145,14 @@ use storage::db::Database;
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init());
+
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+    });
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
@@ -221,6 +309,14 @@ pub fn run() {
             app.manage(audio_manager);
             app.manage(ft_manager);
             app.manage(sync_manager);
+
+            #[cfg(desktop)]
+            {
+                if let Err(e) = setup_system_tray(app) {
+                    eprintln!("Warning: Failed to setup system tray: {e}");
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

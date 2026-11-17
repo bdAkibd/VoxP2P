@@ -1838,6 +1838,10 @@ impl RoomManager {
         if let Some(room) = inner.current_room.take() {
             room.close().await;
         }
+        if let Some(ref app) = self.app_handle {
+            use tauri::Emitter;
+            let _ = app.emit("room://left", ());
+        }
     }
 
     pub async fn send_room_chat(
