@@ -26,6 +26,7 @@ export interface RoomState {
   room_id: string;
   host_node_id: string;
   peers: PeerInfo[];
+  ticket?: string | null;
 }
 
 export interface Message {

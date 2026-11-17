@@ -13,6 +13,7 @@
     onJoinRoom,
     onLeaveRoom,
     onAddContact,
+    onDirectCall,
   }: {
     profile: UserProfile | null;
     contacts: Contact[];
@@ -24,6 +25,7 @@
     onJoinRoom: (roomId: string) => void;
     onLeaveRoom: () => void;
     onAddContact: (nodeId: string) => void;
+    onDirectCall?: (nodeId: string) => void;
   } = $props();
 
   let targetRoomInput = $state("");
@@ -140,7 +142,7 @@
         <input
           type="text"
           class="sidebar-input"
-          placeholder="Room ID (e.g. lobby)..."
+          placeholder="Room ID or Ticket..."
           bind:value={targetRoomInput}
           onkeydown={(e) => e.key === "Enter" && handleJoinRoom()}
         />
@@ -185,10 +187,14 @@
             </div>
             <button
               class="quick-call-btn"
-              title="Quick Call Room"
+              title="Start 1-on-1 Call"
               onclick={(e) => {
                 e.stopPropagation();
-                onJoinRoom(`room_${contact.node_id.slice(0, 8)}`);
+                if (onDirectCall) {
+                  onDirectCall(contact.node_id);
+                } else {
+                  onJoinRoom(`room_${contact.node_id.slice(0, 8)}`);
+                }
               }}
             >
               📞

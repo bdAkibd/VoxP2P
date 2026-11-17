@@ -289,12 +289,14 @@ impl FileTransferManager {
             attachment_hash: Some(hash_str.clone()),
             attachment_name: Some(filename.clone()),
             timestamp: now,
-            delivered: 1,
+            delivered: 0,
         };
 
         if PublicKey::from_str(&target_chat).is_ok() {
             let delivered = self.try_send_quic_dm(&target_chat, &msg).await;
             msg.delivered = if delivered { 1 } else { 0 };
+        } else {
+            msg.delivered = 1;
         }
 
         // Save in local SQLite DB
@@ -430,9 +432,13 @@ impl FileTransferManager {
         }
 
         let mut flushed = 0;
-        for msg in pending {
+        for mut msg in pending {
             if self.try_send_quic_dm(recipient_node_id, &msg).await {
                 let _ = self.db.mark_message_delivered(&msg.id);
+                msg.delivered = 1;
+                if let Some(ref cb) = self.chat_cb {
+                    cb(&msg);
+                }
                 flushed += 1;
             } else {
                 // Peer is currently unreachable; leave remaining in queue

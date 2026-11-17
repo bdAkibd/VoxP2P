@@ -10,6 +10,7 @@ pub const EVENT_CHAT_MESSAGE: &str = "voxp2p://chat-message";
 pub const EVENT_FILE_TRANSFER: &str = "voxp2p://file-transfer";
 pub const EVENT_TRANSFER_PROGRESS: &str = "transfer://progress";
 pub const EVENT_HOST_CHANGED: &str = "room://host-changed";
+pub const EVENT_PEERS_UPDATED: &str = "room://peers-updated";
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -348,7 +348,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered
              FROM messages
-             WHERE delivered = 0 AND (chat_id = ?1 OR sender_id != ?1)
+             WHERE delivered = 0 AND chat_id = ?1
              ORDER BY timestamp ASC",
         )?;
         let rows = stmt.query_map(params![node_id], |row| {

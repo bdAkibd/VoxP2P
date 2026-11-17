@@ -5,12 +5,83 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
+use bytes::Bytes;
+use futures::StreamExt;
+use base64::Engine;
 use iroh::{PublicKey, SecretKey, Signature};
+use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
+use iroh_gossip::proto::TopicId;
 
-use crate::ipc::events::{HostChangedPayload, EVENT_HOST_CHANGED};
-use crate::network::node::NodeManager;
+use crate::ipc::events::{HostChangedPayload, EVENT_HOST_CHANGED, EVENT_PEERS_UPDATED};
+use crate::network::node::{NodeAddr, NodeManager};
 use crate::storage::db::Database;
 use crate::storage::models::{Contact, Message};
+
+// ============================================================================
+// 0. Room Ticket (Compound Bootstrap Structure)
+// ============================================================================
+
+/// Compound Room Ticket containing gossip topic ID and bootstrap nodes for NAT discovery.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomTicket {
+    pub topic_id: [u8; 32],
+    pub bootstrap_nodes: Vec<NodeAddr>,
+}
+
+impl RoomTicket {
+    pub fn new(topic_id: [u8; 32], bootstrap_nodes: Vec<NodeAddr>) -> Self {
+        Self {
+            topic_id,
+            bootstrap_nodes,
+        }
+    }
+
+    pub fn to_ticket_string(&self) -> Result<String, String> {
+        let json_bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        let encoded = data_encoding::BASE32_NOPAD.encode(&json_bytes);
+        Ok(format!("ticket_{}", encoded))
+    }
+
+    pub fn from_ticket_string(s: &str) -> Result<Self, String> {
+        let clean = s.trim();
+        let payload = clean.strip_prefix("ticket_").unwrap_or(clean);
+
+        // 1. Try base32 decode (standard for ticket_...)
+        if let Ok(bytes) = data_encoding::BASE32_NOPAD.decode(payload.as_bytes()) {
+            if let Ok(ticket) = serde_json::from_slice::<Self>(&bytes) {
+                return Ok(ticket);
+            }
+        }
+
+        // 2. Try URL-safe base64 decode
+        if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) {
+            if let Ok(ticket) = serde_json::from_slice::<Self>(&bytes) {
+                return Ok(ticket);
+            }
+        }
+
+        // 3. Try standard base64 decode
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload) {
+            if let Ok(ticket) = serde_json::from_slice::<Self>(&bytes) {
+                return Ok(ticket);
+            }
+        }
+
+        // 4. Try raw JSON string
+        if let Ok(ticket) = serde_json::from_str::<Self>(payload) {
+            return Ok(ticket);
+        }
+
+        Err(format!("Invalid room ticket format: {}", s))
+    }
+}
+
+impl FromStr for RoomTicket {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_ticket_string(s)
+    }
+}
 
 
 // ============================================================================
@@ -192,6 +263,8 @@ pub struct RoomState {
     /// Active peers deterministically ordered by (join_timestamp, node_id).
     pub peers: Vec<PeerInfo>,
     pub heartbeat_timeout_ms: u64,
+    #[serde(default)]
+    pub ticket: Option<String>,
 }
 
 impl RoomState {
@@ -201,6 +274,7 @@ impl RoomState {
             host_node_id,
             peers: Vec::new(),
             heartbeat_timeout_ms: 2000,
+            ticket: None,
         }
     }
 
@@ -268,6 +342,7 @@ impl RoomState {
 
 pub type HostChangedCallback = Arc<dyn Fn(&HostChangedPayload) + Send + Sync>;
 pub type ChatMessageCallback = Arc<dyn Fn(&Message) + Send + Sync>;
+pub type PeersUpdatedCallback = Arc<dyn Fn(&RoomState) + Send + Sync>;
 pub type AvatarHandshakeCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 pub struct RoomSession {
@@ -283,9 +358,15 @@ pub struct RoomSession {
     pub db: Database,
     pub host_changed_cb: Option<HostChangedCallback>,
     pub chat_message_cb: Option<ChatMessageCallback>,
+    pub peers_updated_cb: Option<PeersUpdatedCallback>,
     pub avatar_cb: Arc<RwLock<Option<AvatarHandshakeCallback>>>,
+    pub gossip_sender: Arc<Mutex<Option<GossipSender>>>,
+    pub join_timestamp: u64,
+    pub local_nickname: Arc<RwLock<String>>,
+    pub local_avatar_hash: Arc<RwLock<Option<String>>>,
     cancel_tx: broadcast::Sender<()>,
     heartbeat_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    gossip_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl RoomSession {
@@ -298,7 +379,28 @@ impl RoomSession {
         host_changed_cb: Option<HostChangedCallback>,
         chat_message_cb: Option<ChatMessageCallback>,
     ) -> Arc<Self> {
+        Self::with_callbacks(
+            room_id,
+            local_node_id,
+            secret_key,
+            initial_host_id,
+            db,
+            host_changed_cb,
+            chat_message_cb,
+            None,
+        )
+    }
 
+    pub fn with_callbacks(
+        room_id: String,
+        local_node_id: String,
+        secret_key: SecretKey,
+        initial_host_id: String,
+        db: Database,
+        host_changed_cb: Option<HostChangedCallback>,
+        chat_message_cb: Option<ChatMessageCallback>,
+        peers_updated_cb: Option<PeersUpdatedCallback>,
+    ) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(256);
         let (forwarded_datagram_tx, _) = broadcast::channel(1024);
         let (cancel_tx, _) = broadcast::channel(1);
@@ -308,6 +410,11 @@ impl RoomSession {
         let last_heartbeat_received = Arc::new(RwLock::new(Instant::now()));
         let last_heartbeat_sent = Arc::new(RwLock::new(Instant::now()));
         let relay_targets = Arc::new(RwLock::new(HashSet::new()));
+        let gossip_sender = Arc::new(Mutex::new(None));
+        let join_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
 
         let session = Arc::new(Self {
             room_id: room_id.clone(),
@@ -322,12 +429,18 @@ impl RoomSession {
             db,
             host_changed_cb: host_changed_cb.clone(),
             chat_message_cb,
+            peers_updated_cb: peers_updated_cb.clone(),
             avatar_cb: Arc::new(RwLock::new(None)),
+            gossip_sender: gossip_sender.clone(),
+            join_timestamp,
+            local_nickname: Arc::new(RwLock::new("Me".to_string())),
+            local_avatar_hash: Arc::new(RwLock::new(None)),
             cancel_tx: cancel_tx.clone(),
             heartbeat_task: Mutex::new(None),
+            gossip_task: Mutex::new(None),
         });
 
-        // Spawn the background heartbeat and host-migration task if within a tokio runtime
+        // Spawn background heartbeat and host-migration task if within a tokio runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let task = handle.spawn(Self::run_background_loop(
                 room_id,
@@ -336,7 +449,9 @@ impl RoomSession {
                 last_heartbeat_received,
                 last_heartbeat_sent,
                 broadcast_tx,
+                gossip_sender,
                 host_changed_cb,
+                peers_updated_cb,
                 cancel_tx.subscribe(),
             ));
 
@@ -353,7 +468,7 @@ impl RoomSession {
     /// - If self.node_id == current_host_id: broadcast Heartbeat every 700ms.
     /// - If self.node_id != current_host_id and no Heartbeat received within 2000ms:
     ///   remove dead host, deterministically select first peer in sorted list as new host,
-    ///   and emit Tauri event `room://host-changed`.
+    ///   and emit Tauri events `room://host-changed` and `room://peers-updated`.
     async fn run_background_loop(
         room_id: String,
         local_node_id: String,
@@ -361,7 +476,9 @@ impl RoomSession {
         last_heartbeat_received: Arc<RwLock<Instant>>,
         last_heartbeat_sent: Arc<RwLock<Instant>>,
         broadcast_tx: broadcast::Sender<RoomGossipMessage>,
+        gossip_sender: Arc<Mutex<Option<GossipSender>>>,
         host_changed_cb: Option<HostChangedCallback>,
+        peers_updated_cb: Option<PeersUpdatedCallback>,
         mut cancel_rx: broadcast::Receiver<()>,
     ) {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
@@ -384,8 +501,8 @@ impl RoomSession {
                         // Current Host broadcasts Heartbeat every 700ms
                         let mut last_sent = last_heartbeat_sent.write().await;
                         if now.duration_since(*last_sent) >= Duration::from_millis(700) {
-                            let timestamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
+                            let timestamp = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_millis() as u64;
 
@@ -394,7 +511,12 @@ impl RoomSession {
                                 timestamp,
                                 peer_list: peer_ids,
                             };
-                            let _ = broadcast_tx.send(heartbeat);
+                            let _ = broadcast_tx.send(heartbeat.clone());
+                            if let Some(ref sender) = *gossip_sender.lock().await {
+                                if let Ok(bytes) = heartbeat.to_bytes() {
+                                    let _ = sender.broadcast(Bytes::from(bytes)).await;
+                                }
+                            }
                             *last_sent = now;
                             *last_heartbeat_received.write().await = now;
                         }
@@ -412,6 +534,8 @@ impl RoomSession {
                             if let Some(new_host_id) = st.compute_next_host() {
                                 st.set_host(new_host_id.clone());
                                 *last_heartbeat_received.write().await = now;
+                                let st_clone = st.clone();
+                                drop(st);
 
                                 let payload = HostChangedPayload {
                                     room_id: room_id.clone(),
@@ -419,21 +543,27 @@ impl RoomSession {
                                     new_host_id: new_host_id.clone(),
                                 };
                                 Self::emit_host_changed(&host_changed_cb, &payload);
+                                Self::emit_peers_updated(&peers_updated_cb, &st_clone);
 
                                 // If we were promoted to host, send immediate heartbeat
                                 if new_host_id == local_node_id {
-                                    let timestamp = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
+                                    let timestamp = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
                                         .unwrap_or_default()
                                         .as_millis() as u64;
                                     let updated_peers =
-                                        st.peers.iter().map(|p| p.node_id.clone()).collect();
+                                        st_clone.peers.iter().map(|p| p.node_id.clone()).collect();
                                     let heartbeat = RoomGossipMessage::Heartbeat {
                                         host_id: local_node_id.clone(),
                                         timestamp,
                                         peer_list: updated_peers,
                                     };
-                                    let _ = broadcast_tx.send(heartbeat);
+                                    let _ = broadcast_tx.send(heartbeat.clone());
+                                    if let Some(ref sender) = *gossip_sender.lock().await {
+                                        if let Ok(bytes) = heartbeat.to_bytes() {
+                                            let _ = sender.broadcast(Bytes::from(bytes)).await;
+                                        }
+                                    }
                                     *last_heartbeat_sent.write().await = now;
                                 }
                             }
@@ -450,11 +580,63 @@ impl RoomSession {
         }
     }
 
+    fn emit_peers_updated(cb: &Option<PeersUpdatedCallback>, state: &RoomState) {
+        if let Some(f) = cb {
+            f(state);
+        }
+    }
+
+    pub async fn set_local_profile(&self, nickname: String, avatar_hash: Option<String>) {
+        *self.local_nickname.write().await = nickname;
+        *self.local_avatar_hash.write().await = avatar_hash;
+    }
+
+    pub fn attach_gossip_receiver(self: &Arc<Self>, mut receiver: GossipReceiver) {
+        let session = self.clone();
+        let mut cancel_rx = self.cancel_tx.subscribe();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel_rx.recv() => break,
+                    item = receiver.next() => {
+                        match item {
+                            Some(Ok(Event::Received(msg))) => {
+                                if let Ok(room_msg) = RoomGossipMessage::from_bytes(&msg.content) {
+                                    session.handle_gossip_message(room_msg).await.ok();
+                                }
+                            }
+                            Some(Ok(Event::NeighborUp(_nid))) => {}
+                            Some(Ok(Event::NeighborDown(_nid))) => {}
+                            Some(Err(e)) => {
+                                eprintln!("Gossip receiver error: {e}");
+                            }
+                            None => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+        let s_clone = self.clone();
+        tokio::spawn(async move {
+            *s_clone.gossip_task.lock().await = Some(task);
+        });
+    }
+
+    pub async fn broadcast_gossip(&self, msg: RoomGossipMessage) -> Result<(), String> {
+        let _ = self.broadcast_tx.send(msg.clone());
+        if let Some(ref sender) = *self.gossip_sender.lock().await {
+            let bytes = msg.to_bytes().map_err(|e| e.to_string())?;
+            sender.broadcast(Bytes::from(bytes)).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Implements manual host transfer:
     /// 1. Verifies caller is current host.
     /// 2. Signs target_node_id with host's Ed25519 SecretKey.
     /// 3. Broadcasts signed `TransferHost` message.
-    /// 4. Updates local state immediately and emits `room://host-changed`.
+    /// 4. Updates local state immediately and emits `room://host-changed` and `room://peers-updated`.
     pub async fn transfer_host(&self, target_node_id: &str) -> Result<(), String> {
         let mut state = self.state.write().await;
 
@@ -483,20 +665,23 @@ impl RoomSession {
             new_host_id: target_node_id.to_string(),
             signature: sig_bytes,
         };
-        let _ = self.broadcast_tx.send(msg);
+        let _ = self.broadcast_gossip(msg).await;
 
         // Update state immediately
         let old_host_id = state.host_node_id.clone();
         state.set_host(target_node_id.to_string());
         *self.last_heartbeat_received.write().await = Instant::now();
+        let st_clone = state.clone();
+        drop(state);
 
-        // Emit room://host-changed Tauri event
+        // Emit room://host-changed & room://peers-updated Tauri events
         let payload = HostChangedPayload {
-            room_id: state.room_id.clone(),
+            room_id: st_clone.room_id.clone(),
             old_host_id,
             new_host_id: target_node_id.to_string(),
         };
         Self::emit_host_changed(&self.host_changed_cb, &payload);
+        Self::emit_peers_updated(&self.peers_updated_cb, &st_clone);
 
         Ok(())
     }
@@ -519,13 +704,16 @@ impl RoomSession {
         // Valid signature from current host: apply immediately
         state.set_host(new_host_id.to_string());
         *self.last_heartbeat_received.write().await = Instant::now();
+        let st_clone = state.clone();
+        drop(state);
 
         let payload = HostChangedPayload {
-            room_id: state.room_id.clone(),
+            room_id: st_clone.room_id.clone(),
             old_host_id: current_host_id,
             new_host_id: new_host_id.to_string(),
         };
         Self::emit_host_changed(&self.host_changed_cb, &payload);
+        Self::emit_peers_updated(&self.peers_updated_cb, &st_clone);
 
         Ok(())
     }
@@ -539,17 +727,31 @@ impl RoomSession {
                 avatar_hash,
                 join_timestamp,
             } => {
-                let mut state = self.state.write().await;
-                let is_host = node_id == state.host_node_id;
-                state.add_or_update_peer(PeerInfo {
-                    node_id: node_id.clone(),
-                    nickname: nickname.clone(),
-                    avatar_hash: avatar_hash.clone(),
-                    join_timestamp,
-                    is_host,
-                    is_muted: false,
-                    is_deafened: false,
-                });
+                if node_id == self.local_node_id {
+                    return Ok(());
+                }
+
+                let is_new = {
+                    let st = self.state.read().await;
+                    !st.peers.iter().any(|p| p.node_id == node_id)
+                };
+
+                let st_clone = {
+                    let mut state = self.state.write().await;
+                    let is_host = node_id == state.host_node_id;
+                    state.add_or_update_peer(PeerInfo {
+                        node_id: node_id.clone(),
+                        nickname: nickname.clone(),
+                        avatar_hash: avatar_hash.clone(),
+                        join_timestamp,
+                        is_host,
+                        is_muted: false,
+                        is_deafened: false,
+                    });
+                    state.clone()
+                };
+
+                Self::emit_peers_updated(&self.peers_updated_cb, &st_clone);
 
                 // Auto-update local contacts SQLite table
                 self.db
@@ -561,6 +763,26 @@ impl RoomSession {
                     if let Some(cb) = cb_opt {
                         cb(&node_id, hash);
                     }
+                }
+
+                // If this is a newly seen peer, reply with our own info and state update
+                if is_new {
+                    let my_nickname = self.local_nickname.read().await.clone();
+                    let my_avatar = self.local_avatar_hash.read().await.clone();
+                    let my_joined = RoomGossipMessage::PeerJoined {
+                        node_id: self.local_node_id.clone(),
+                        nickname: my_nickname,
+                        avatar_hash: my_avatar,
+                        join_timestamp: self.join_timestamp,
+                    };
+                    let _ = self.broadcast_gossip(my_joined).await;
+
+                    let my_state = RoomGossipMessage::PeerStateUpdate {
+                        node_id: self.local_node_id.clone(),
+                        is_muted: false,
+                        is_deafened: false,
+                    };
+                    let _ = self.broadcast_gossip(my_state).await;
                 }
             }
             RoomGossipMessage::Heartbeat {
@@ -584,11 +806,15 @@ impl RoomSession {
                 is_muted,
                 is_deafened,
             } => {
-                let mut state = self.state.write().await;
-                if let Some(peer) = state.get_peer_mut(&node_id) {
-                    peer.is_muted = is_muted;
-                    peer.is_deafened = is_deafened;
-                }
+                let st_clone = {
+                    let mut state = self.state.write().await;
+                    if let Some(peer) = state.get_peer_mut(&node_id) {
+                        peer.is_muted = is_muted;
+                        peer.is_deafened = is_deafened;
+                    }
+                    state.clone()
+                };
+                Self::emit_peers_updated(&self.peers_updated_cb, &st_clone);
             }
             RoomGossipMessage::RelayRequest {
                 from_node: _,
@@ -665,7 +891,7 @@ impl RoomSession {
             timestamp: now,
         };
 
-        self.broadcast_tx.send(gossip_msg).ok();
+        let _ = self.broadcast_gossip(gossip_msg).await;
 
         if let Some(ref cb) = self.chat_message_cb {
             cb(&msg);
@@ -821,6 +1047,10 @@ impl RoomSession {
         if let Some(task) = task_lock.take() {
             task.abort();
         }
+        let mut g_lock = self.gossip_task.lock().await;
+        if let Some(task) = g_lock.take() {
+            task.abort();
+        }
     }
 }
 
@@ -836,6 +1066,7 @@ impl Drop for RoomSession {
 
 #[derive(Clone)]
 pub struct RoomManager {
+    pub node_manager: Option<NodeManager>,
     inner: Arc<RwLock<RoomManagerInner>>,
     db: Database,
     app_handle: Option<tauri::AppHandle>,
@@ -865,6 +1096,7 @@ impl RoomManager {
         }));
 
         let mgr = Self {
+            node_manager: Some(node_manager.clone()),
             inner: inner.clone(),
             db,
             app_handle,
@@ -872,22 +1104,19 @@ impl RoomManager {
 
         // Asynchronously load real identity from node_manager
         let mgr_clone = mgr.clone();
+        let nm = node_manager.clone();
+        let spawn_fn = async move {
+            let key = nm.get_secret_key().await;
+            let nid = nm.get_node_id().await;
+            let mut w = mgr_clone.inner.write().await;
+            w.secret_key = key;
+            w.local_node_id = nid;
+        };
+
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let key = node_manager.get_secret_key().await;
-                let nid = node_manager.get_node_id().await;
-                let mut w = mgr_clone.inner.write().await;
-                w.secret_key = key;
-                w.local_node_id = nid;
-            });
+            handle.spawn(spawn_fn);
         } else {
-            tauri::async_runtime::spawn(async move {
-                let key = node_manager.get_secret_key().await;
-                let nid = node_manager.get_node_id().await;
-                let mut w = mgr_clone.inner.write().await;
-                w.secret_key = key;
-                w.local_node_id = nid;
-            });
+            tauri::async_runtime::spawn(spawn_fn);
         }
 
         mgr
@@ -907,6 +1136,7 @@ impl RoomManager {
         }));
 
         Self {
+            node_manager: None,
             inner,
             db,
             app_handle,
@@ -920,10 +1150,32 @@ impl RoomManager {
 
     pub async fn create_or_join_room(
         &self,
-        room_id: &str,
+        room_id_or_ticket: &str,
         host_id: Option<&str>,
     ) -> Arc<RoomSession> {
         let mut inner = self.inner.write().await;
+
+        let parsed_ticket = RoomTicket::from_ticket_string(room_id_or_ticket).ok();
+
+        let (topic_id, bootstrap_nodes, room_id, effective_host_id, is_joining_with_ticket) =
+            if let Some(ticket) = parsed_ticket {
+                let tid = ticket.topic_id;
+                let short_hex = data_encoding::HEXLOWER.encode(&tid[..6]);
+                let r_id = format!("room_{}", short_hex);
+                let h_id = host_id
+                    .map(|s| s.to_string())
+                    .or_else(|| ticket.bootstrap_nodes.first().map(|a| a.id.to_string()))
+                    .unwrap_or_else(|| inner.local_node_id.clone());
+                (tid, ticket.bootstrap_nodes, r_id, h_id, true)
+            } else {
+                let tid = *iroh_blobs::Hash::new(room_id_or_ticket.as_bytes()).as_bytes();
+                let r_id = room_id_or_ticket.to_string();
+                let h_id = host_id
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| inner.local_node_id.clone());
+                (tid, Vec::new(), r_id, h_id, false)
+            };
+
         if let Some(existing) = &inner.current_room {
             if existing.room_id == room_id {
                 return existing.clone();
@@ -931,9 +1183,46 @@ impl RoomManager {
             existing.close().await;
         }
 
-        let host = host_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| inner.local_node_id.clone());
+        let mut bootstrap_ids = Vec::new();
+        if let Some(ref nm) = self.node_manager {
+            for node_addr in &bootstrap_nodes {
+                nm.add_node_addr(node_addr.clone()).await;
+                bootstrap_ids.push(node_addr.id);
+            }
+        }
+
+        let generated_ticket_str = if !is_joining_with_ticket {
+            if let Some(ref nm) = self.node_manager {
+                let host_addr = nm.get_node_addr().await;
+                let nodes = host_addr.into_iter().collect::<Vec<_>>();
+                let t = RoomTicket::new(topic_id, nodes);
+                t.to_ticket_string().ok()
+            } else {
+                None
+            }
+        } else {
+            Some(room_id_or_ticket.to_string())
+        };
+
+        // Subscribe to iroh-gossip
+        let (gossip_sender, gossip_receiver) = if let Some(ref nm) = self.node_manager {
+            if let Some(gossip) = nm.get_gossip().await {
+                match gossip.subscribe(TopicId::from(topic_id), bootstrap_ids).await {
+                    Ok(topic) => {
+                        let (s, r) = topic.split();
+                        (Some(s), Some(r))
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to subscribe to gossip topic: {e}");
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
 
         let host_changed_cb = self.app_handle.as_ref().map(|app| {
             let app_handle = app.clone();
@@ -958,15 +1247,87 @@ impl RoomManager {
             cb
         });
 
-        let session = RoomSession::new(
-            room_id.to_string(),
+        let peers_updated_cb = self.app_handle.as_ref().map(|app| {
+            let app_handle = app.clone();
+            let cb: PeersUpdatedCallback = Arc::new(move |st: &RoomState| {
+                use tauri::Emitter;
+                let _ = app_handle.emit(EVENT_PEERS_UPDATED, st);
+            });
+            cb
+        });
+
+        let session = RoomSession::with_callbacks(
+            room_id.clone(),
             inner.local_node_id.clone(),
             inner.secret_key.clone(),
-            host,
+            effective_host_id.clone(),
             self.db.clone(),
             host_changed_cb,
             chat_message_cb,
+            peers_updated_cb.clone(),
         );
+
+        if let Some(s) = gossip_sender {
+            *session.gossip_sender.lock().await = Some(s);
+        }
+
+        // Set ticket in state
+        {
+            let mut st = session.state.write().await;
+            st.ticket = generated_ticket_str;
+        }
+
+        // Fetch our user profile to set nickname & avatar
+        let (nickname, avatar_hash) = if let Some(ref nm) = self.node_manager {
+            let p = nm.get_my_profile().await;
+            (p.nickname, p.avatar_hash)
+        } else {
+            ("Host".to_string(), None)
+        };
+        session.set_local_profile(nickname.clone(), avatar_hash.clone()).await;
+
+        // Immediately insert Host/Self into active peers
+        let now_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let is_me_host = inner.local_node_id == effective_host_id;
+
+        {
+            let mut st = session.state.write().await;
+            st.add_or_update_peer(PeerInfo {
+                node_id: inner.local_node_id.clone(),
+                nickname: nickname.clone(),
+                avatar_hash: avatar_hash.clone(),
+                join_timestamp: now_ts,
+                is_host: is_me_host,
+                is_muted: false,
+                is_deafened: false,
+            });
+        }
+
+        // Emit peers updated immediately so UI shows the 1 user right away
+        {
+            let st = session.state.read().await;
+            RoomSession::emit_peers_updated(&peers_updated_cb, &st);
+        }
+
+        // Attach gossip receiver loop if available
+        if let Some(recv) = gossip_receiver {
+            session.attach_gossip_receiver(recv);
+        }
+
+        // Broadcast PeerJoined over gossip
+        let peer_joined_msg = RoomGossipMessage::PeerJoined {
+            node_id: inner.local_node_id.clone(),
+            nickname,
+            avatar_hash,
+            join_timestamp: now_ts,
+        };
+        let s_clone = session.clone();
+        tokio::spawn(async move {
+            s_clone.broadcast_gossip(peer_joined_msg).await.ok();
+        });
 
         if let Some(ref cb) = inner.avatar_cb {
             session.set_avatar_cb(cb.clone()).await;
@@ -974,6 +1335,16 @@ impl RoomManager {
 
         inner.current_room = Some(session.clone());
         session
+    }
+
+    pub async fn get_room_ticket(&self) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(room) = &inner.current_room {
+            let st = room.state.read().await;
+            st.ticket.clone()
+        } else {
+            None
+        }
     }
 
     pub async fn get_current_room(&self) -> Option<Arc<RoomSession>> {
@@ -1051,6 +1422,50 @@ impl RoomManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_room_ticket_serialization_and_deserialization() {
+        let topic_bytes = [42u8; 32];
+        let sk = SecretKey::generate();
+        let addr = iroh::EndpointAddr::new(sk.public());
+        let ticket = RoomTicket::new(topic_bytes, vec![addr]);
+
+        let ticket_str = ticket.to_ticket_string().unwrap();
+        assert!(ticket_str.starts_with("ticket_"));
+
+        let parsed = RoomTicket::from_ticket_string(&ticket_str).unwrap();
+        assert_eq!(parsed.topic_id, topic_bytes);
+        assert_eq!(parsed.bootstrap_nodes.len(), 1);
+        assert_eq!(parsed.bootstrap_nodes[0].id, sk.public());
+
+        // Test FromStr implementation
+        let parsed_from_str: RoomTicket = ticket_str.parse().unwrap();
+        assert_eq!(parsed_from_str.topic_id, topic_bytes);
+    }
+
+    #[test]
+    fn test_room_manager_host_initial_peer_and_state() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let db = Database::new_in_memory().unwrap();
+            let sk = SecretKey::generate();
+            let local_id = sk.public().to_string();
+
+            let mgr = RoomManager::new_standalone(local_id.clone(), sk, db, None);
+            let session = mgr.create_or_join_room("lobby", None).await;
+
+            let st = session.state.read().await;
+            assert_eq!(st.room_id, "lobby");
+            assert_eq!(st.peers.len(), 1);
+            assert_eq!(st.peers[0].node_id, local_id);
+            assert!(st.peers[0].is_host);
+
+            mgr.leave_room().await;
+        });
+    }
 
     #[test]
     fn test_secret_key_sign_and_verify() {

@@ -15,6 +15,25 @@
   let contextMenuPeer = $state<PeerInfo | null>(null);
   let contextMenuPos = $state<{ x: number; y: number }>({ x: 0, y: 0 });
   let peerVolumeMap = $state<Record<string, number>>({});
+  let copyTicketFeedback = $state(false);
+
+  async function copyRoomTicket() {
+    try {
+      let ticket = roomState?.ticket;
+      if (!ticket) {
+        ticket = await api.getRoomTicket();
+      }
+      if (ticket) {
+        await navigator.clipboard.writeText(ticket);
+        copyTicketFeedback = true;
+        setTimeout(() => {
+          copyTicketFeedback = false;
+        }, 2500);
+      }
+    } catch (err) {
+      console.error("Failed to copy room ticket:", err);
+    }
+  }
 
   function isSpeaking(nodeId: string): boolean {
     const level = audioLevels[nodeId] || 0;
@@ -67,11 +86,21 @@
       <div class="call-title-wrap">
         <span class="live-dot"></span>
         <span class="room-title">Room: {roomState.room_id}</span>
-        <span class="peer-count">({roomState.peers.length} active peers)</span>
+        <span class="peer-count">({roomState.peers.length} active {roomState.peers.length === 1 ? "peer" : "peers"})</span>
       </div>
-      <div class="call-meta-badges">
-        <span class="meta-badge">QUIC Mesh Relay Fallback</span>
-        <span class="meta-badge">48kHz RNNoise Denoised</span>
+      <div class="call-header-right">
+        <button
+          class="share-ticket-btn"
+          class:copied={copyTicketFeedback}
+          title="Copy Room Ticket (Topic ID + Bootstrap Multiaddr) for peer invites"
+          onclick={copyRoomTicket}
+        >
+          {copyTicketFeedback ? "✓ Ticket Copied!" : "📋 Copy Room Ticket"}
+        </button>
+        <div class="call-meta-badges">
+          <span class="meta-badge">QUIC Mesh Relay</span>
+          <span class="meta-badge">48kHz RNNoise</span>
+        </div>
       </div>
     </div>
 
@@ -246,6 +275,35 @@
   .peer-count {
     font-size: 0.82rem;
     color: var(--text-muted);
+  }
+
+  .call-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .share-ticket-btn {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--accent-primary);
+    color: var(--text-primary);
+    padding: 5px 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .share-ticket-btn:hover {
+    background: var(--accent-primary);
+    color: #ffffff;
+  }
+
+  .share-ticket-btn.copied {
+    background: var(--online-status-color);
+    border-color: var(--online-status-color);
+    color: #ffffff;
   }
 
   .call-meta-badges {

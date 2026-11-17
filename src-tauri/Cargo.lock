@@ -7152,7 +7152,11 @@ name = "voxp2p"
 version = "0.1.0"
 dependencies = [
  "audiopus",
+ "base64 0.22.1",
+ "bytes",
  "cpal",
+ "data-encoding",
+ "futures",
  "iroh",
  "iroh-blobs",
  "iroh-gossip",

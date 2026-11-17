@@ -167,6 +167,39 @@ pub async fn get_room_state(
 }
 
 #[tauri::command]
+pub async fn get_room_ticket(
+    room_manager: State<'_, RoomManager>,
+) -> Result<Option<String>, String> {
+    Ok(room_manager.get_room_ticket().await)
+}
+
+#[tauri::command]
+pub async fn start_direct_call(
+    recipient_node_id: String,
+    room_manager: State<'_, RoomManager>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<RoomState, String> {
+    let short_id = if recipient_node_id.len() >= 8 {
+        &recipient_node_id[..8]
+    } else {
+        &recipient_node_id
+    };
+    let call_room_name = format!("call_{}", short_id);
+    let session = room_manager.create_or_join_room(&call_room_name, None).await;
+    let st = session.state.read().await.clone();
+
+    // If ticket was generated, send invite directly to contact over QUIC DM
+    if let Some(ref ticket) = st.ticket {
+        let invite_msg = format!("📞 Incoming 1-on-1 Call: {}", ticket);
+        let _ = ft_manager
+            .send_direct_message(&recipient_node_id, &invite_msg, None, None)
+            .await;
+    }
+
+    Ok(st)
+}
+
+#[tauri::command]
 pub async fn join_room(
     room_id: String,
     host_id: Option<String>,

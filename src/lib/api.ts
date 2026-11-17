@@ -89,6 +89,14 @@ export const api = {
     return await invoke<RoomState | null>("get_room_state");
   },
 
+  async getRoomTicket(): Promise<string | null> {
+    return await invoke<string | null>("get_room_ticket");
+  },
+
+  async startDirectCall(recipientNodeId: string): Promise<RoomState> {
+    return await invoke<RoomState>("start_direct_call", { recipientNodeId });
+  },
+
   async joinRoom(roomId: string, hostId?: string | null): Promise<RoomState> {
     return await invoke<RoomState>("join_room", {
       roomId,
@@ -192,8 +200,14 @@ export const api = {
     });
   },
 
+  onPeersUpdated(callback: (payload: RoomState) => void): Promise<UnlistenFn> {
+    return listen<RoomState>("room://peers-updated", (event) => {
+      callback(event.payload);
+    });
+  },
+
   onChatMessage(callback: (msg: Message) => void): Promise<UnlistenFn> {
-    return listen<any>("chat://message", (event) => {
+    return listen<any>("voxp2p://chat-message", (event) => {
       const msg = event.payload?.message || event.payload;
       callback(msg);
     });

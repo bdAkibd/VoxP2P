@@ -4,10 +4,12 @@ use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
 use iroh::{
+    address_lookup::memory::MemoryLookup,
     endpoint::presets,
     protocol::Router,
-    Endpoint, PublicKey, SecretKey,
+    Endpoint, EndpointAddr, PublicKey, SecretKey,
 };
+pub type NodeAddr = EndpointAddr;
 use iroh_blobs::{store::mem::MemStore, BlobsProtocol};
 use iroh_gossip::net::Gossip;
 
@@ -79,6 +81,7 @@ pub struct InnerNodeState {
     pub gossip: Option<Gossip>,
     pub blobs_store: Option<MemStore>,
     pub dm_handler: DynamicDmHandler,
+    pub memory_lookup: MemoryLookup,
     pub secret_key: SecretKey,
     pub profile: LocalProfile,
     pub bypass_vpn: bool,
@@ -102,6 +105,7 @@ impl NodeManager {
             gossip: None,
             blobs_store: None,
             dm_handler: DynamicDmHandler::default(),
+            memory_lookup: MemoryLookup::new(),
             secret_key,
             profile,
             bypass_vpn: true,
@@ -155,8 +159,11 @@ impl NodeManager {
         let secret_key = state.secret_key.clone();
         let bypass_vpn = state.bypass_vpn;
 
-        // Build the Endpoint with N0 preset (Pkarr/DNS discovery + relay fallback)
-        let builder = Endpoint::builder(presets::N0).secret_key(secret_key);
+        let memory_lookup = state.memory_lookup.clone();
+        // Build the Endpoint with N0 preset (Pkarr/DNS discovery + relay fallback) + in-memory lookup
+        let builder = Endpoint::builder(presets::N0)
+            .secret_key(secret_key)
+            .address_lookup(memory_lookup);
 
         if bypass_vpn {
             if let Some(_iface) = detect_default_physical_interface() {
@@ -224,6 +231,16 @@ impl NodeManager {
     pub async fn get_endpoint(&self) -> Option<Endpoint> {
         let state = self.state.read().await;
         state.endpoint.clone()
+    }
+
+    pub async fn get_node_addr(&self) -> Option<NodeAddr> {
+        let state = self.state.read().await;
+        state.endpoint.as_ref().map(|ep| ep.addr())
+    }
+
+    pub async fn add_node_addr(&self, addr: NodeAddr) {
+        let state = self.state.read().await;
+        state.memory_lookup.add_endpoint_info(addr);
     }
 
     pub async fn get_gossip(&self) -> Option<Gossip> {

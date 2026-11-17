@@ -72,6 +72,7 @@
     // 5. Register Event Listeners
     let unlistenLevels: (() => void) | undefined;
     let unlistenHost: (() => void) | undefined;
+    let unlistenPeers: (() => void) | undefined;
     let unlistenChat: (() => void) | undefined;
 
     api.onAudioLevels((levels) => {
@@ -87,8 +88,16 @@
       }
     }).then((u) => (unlistenHost = u));
 
+    api.onPeersUpdated((newState) => {
+      roomState = newState;
+    }).then((u) => (unlistenPeers = u));
+
     api.onChatMessage((msg) => {
-      if (msg.chat_id === activeChatId || msg.sender_id === activeChatId) {
+      const idx = messages.findIndex((m) => m.id === msg.id);
+      if (idx !== -1) {
+        messages[idx] = msg;
+        messages = [...messages];
+      } else if (msg.chat_id === activeChatId || msg.sender_id === activeChatId) {
         messages = [...messages, msg];
       }
     }).then((u) => (unlistenChat = u));
@@ -96,6 +105,7 @@
     return () => {
       unlistenLevels?.();
       unlistenHost?.();
+      unlistenPeers?.();
       unlistenChat?.();
     };
   });
@@ -133,6 +143,16 @@
       roomState = null;
     } catch (err) {
       console.error("Failed to leave room:", err);
+    }
+  }
+
+  async function handleDirectCall(contactNodeId: string) {
+    try {
+      const state = await api.startDirectCall(contactNodeId);
+      roomState = state;
+      activeChatId = contactNodeId;
+    } catch (err) {
+      console.error("Failed to start direct call:", err);
     }
   }
 
@@ -193,6 +213,7 @@
       }}
       onLeaveRoom={handleLeaveRoom}
       onAddContact={handleAddContact}
+      onDirectCall={handleDirectCall}
     />
   </div>
 
@@ -221,13 +242,50 @@
       </button>
     </div>
 
-    <CallView {roomState} {profile} {audioLevels} />
+    <!-- Active Call Compact Banner (when navigating to direct contact DMs during a call) -->
+    {#if roomState && activeChatId !== roomState.room_id}
+      <div class="active-call-compact-banner">
+        <div
+          class="banner-left"
+          onclick={() => (activeChatId = roomState!.room_id)}
+          role="button"
+          tabindex="0"
+          onkeydown={(e) => e.key === "Enter" && (activeChatId = roomState!.room_id)}
+        >
+          <span class="live-dot pulse"></span>
+          <span class="banner-title">
+            🔊 In Voice Room: <strong>{roomState.room_id}</strong>
+          </span>
+          <span class="banner-peer-count">
+            ({roomState.peers.length} active {roomState.peers.length === 1 ? "peer" : "peers"})
+          </span>
+        </div>
+        <div class="banner-right">
+          <button
+            class="banner-btn return-btn"
+            onclick={() => (activeChatId = roomState!.room_id)}
+          >
+            Return to Call
+          </button>
+          <button class="banner-btn leave-btn" onclick={handleLeaveRoom}>
+            Leave Call
+          </button>
+        </div>
+      </div>
+    {:else if !roomState && activeChatId !== "lobby" && !activeChatId.startsWith("room_") && !activeChatId.startsWith("call_")}
+      <!-- Direct DM without active call: let ChatView take full height -->
+    {:else}
+      <CallView {roomState} {profile} {audioLevels} />
+    {/if}
+
     <ChatView
       {activeChatId}
       {profile}
       {messages}
       onSendMessage={handleSendMessage}
       onThemeApplied={handleThemeApplied}
+      onJoinRoom={handleJoinRoom}
+      onDirectCall={handleDirectCall}
     />
   </section>
 
@@ -298,6 +356,103 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+  }
+
+  .active-call-compact-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    background: var(--bg-secondary);
+    border-bottom: var(--border-width) solid var(--accent-primary);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    z-index: 15;
+  }
+
+  .banner-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    flex: 1;
+  }
+
+  .banner-title {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+  }
+
+  .banner-title strong {
+    color: var(--accent-hover);
+  }
+
+  .banner-peer-count {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .banner-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .banner-btn {
+    border-radius: var(--border-radius);
+    padding: 5px 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .return-btn {
+    background: var(--accent-primary);
+    border: none;
+    color: #ffffff;
+  }
+
+  .return-btn:hover {
+    background: var(--accent-hover);
+  }
+
+  .leave-btn {
+    background: transparent;
+    border: var(--border-width) solid var(--danger-color);
+    color: var(--danger-color);
+  }
+
+  .leave-btn:hover {
+    background: var(--danger-color);
+    color: #ffffff;
+  }
+
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--voice-speaking-ring);
+    box-shadow: 0 0 8px var(--voice-speaking-ring);
+    flex-shrink: 0;
+  }
+
+  .live-dot.pulse {
+    animation: pulse-glow 2s infinite;
+  }
+
+  @keyframes pulse-glow {
+    0% {
+      transform: scale(0.95);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+    70% {
+      transform: scale(1.1);
+      box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+    }
+    100% {
+      transform: scale(0.95);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
   }
 
   .mobile-header-bar {

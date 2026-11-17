@@ -9,12 +9,16 @@
     messages,
     onSendMessage,
     onThemeApplied,
+    onJoinRoom,
+    onDirectCall,
   }: {
     activeChatId: string;
     profile: UserProfile | null;
     messages: Message[];
     onSendMessage: (text: string) => void;
     onThemeApplied: (theme: ThemeConfig) => void;
+    onJoinRoom?: (roomIdOrTicket: string) => void;
+    onDirectCall?: (nodeId: string) => void;
   } = $props();
 
   let messageInput = $state("");
@@ -22,6 +26,13 @@
   let isDragging = $state(false);
   let transferProgressMap = $state<Record<string, TransferProgressPayload>>({});
   let downloadedHashes = $state<Record<string, boolean>>({});
+
+  function extractTicket(text: string): string | null {
+    if (!text) return null;
+    const match = text.match(/(ticket_[A-Za-z0-9_-]+)/);
+    if (match) return match[1];
+    return null;
+  }
 
   $effect(() => {
     // Listen for file transfer progress
@@ -186,7 +197,18 @@
           : `Direct: ${activeChatId.slice(0, 10)}...${activeChatId.slice(-6)}`}
       </span>
     </div>
-    <span class="chat-encryption-badge">P2P Encrypted</span>
+    <div class="chat-header-actions">
+      {#if activeChatId !== "lobby" && !activeChatId.startsWith("room_") && !activeChatId.startsWith("call_") && onDirectCall}
+        <button
+          class="direct-call-action-btn"
+          title="Start 1-on-1 Voice Call"
+          onclick={() => onDirectCall?.(activeChatId)}
+        >
+          📞 Call
+        </button>
+      {/if}
+      <span class="chat-encryption-badge">P2P Encrypted</span>
+    </div>
   </div>
 
   <!-- Messages Scroll Area -->
@@ -199,6 +221,7 @@
     {:else}
       {#each messages as msg}
         {@const detectedTheme = detectThemeInText(msg.content)}
+        {@const callTicket = extractTicket(msg.content)}
         <div class="message-card" class:my-message={msg.sender_id === profile?.node_id}>
           <div class="message-avatar">
             {msg.sender_id === profile?.node_id
@@ -240,6 +263,24 @@
                 <button class="apply-theme-btn" onclick={() => applyThemeFromMessage(detectedTheme!)}>
                   Apply Theme
                 </button>
+              </div>
+            {/if}
+
+            <!-- Voice Call Invitation Card if ticket detected in message -->
+            {#if callTicket}
+              <div class="call-invite-banner">
+                <div class="invite-info">
+                  <span class="invite-icon">📞</span>
+                  <div class="invite-text-wrap">
+                    <span class="invite-title">Voice Call Invitation</span>
+                    <span class="invite-sub">P2P Encrypted Mesh Room</span>
+                  </div>
+                </div>
+                {#if onJoinRoom}
+                  <button class="join-call-btn" onclick={() => onJoinRoom?.(callTicket)}>
+                    Join Call
+                  </button>
+                {/if}
               </div>
             {/if}
 
@@ -370,6 +411,30 @@
     font-weight: 700;
     font-size: 0.92rem;
     color: var(--text-primary);
+  }
+
+  .chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .direct-call-action-btn {
+    background: var(--bg-tertiary);
+    border: var(--border-width) solid var(--border-color);
+    color: var(--text-primary);
+    padding: 4px 10px;
+    border-radius: var(--border-radius);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .direct-call-action-btn:hover {
+    background: var(--accent-primary);
+    color: #ffffff;
+    border-color: var(--accent-primary);
   }
 
   .chat-encryption-badge {
@@ -521,6 +586,62 @@
   }
 
   .apply-theme-btn:hover {
+    background: var(--accent-hover);
+  }
+
+  .call-invite-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 8px;
+    padding: 10px 14px;
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--accent-primary);
+    border-radius: var(--border-radius);
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  .invite-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .invite-icon {
+    font-size: 1.4rem;
+  }
+
+  .invite-text-wrap {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .invite-title {
+    font-weight: 600;
+    font-size: 0.88rem;
+    color: var(--text-primary);
+  }
+
+  .invite-sub {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+  }
+
+  .join-call-btn {
+    background: var(--accent-primary);
+    color: #ffffff;
+    border: none;
+    border-radius: var(--border-radius);
+    padding: 6px 14px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .join-call-btn:hover {
     background: var(--accent-hover);
   }
 
