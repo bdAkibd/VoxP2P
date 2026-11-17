@@ -51,6 +51,12 @@
   }
 
   onMount(() => {
+    // Disable default WebView right-click context menu
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("contextmenu", handleContextMenu);
+
     // 1. Initialize Theme
     currentTheme = initTheme();
 
@@ -113,6 +119,7 @@
     }).then((u) => (unlistenIncomingCall = u));
 
     return () => {
+      window.removeEventListener("contextmenu", handleContextMenu);
       unlistenLevels?.();
       unlistenHost?.();
       unlistenPeers?.();

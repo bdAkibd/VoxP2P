@@ -29,21 +29,25 @@ pub struct AudioDevicesResponse {
 }
 
 /// Central audio manager coordinating microphone capture, per-peer mixing,
-/// hardware playback, and throttled 50ms volume levels emission.
+/// hardware playback, throttled 50ms volume levels emission, and 30ms local input meter.
 pub struct AudioManager {
     pub capture: Arc<Mutex<AudioCapturePipeline>>,
     pub playback: Arc<Mutex<AudioPlaybackPipeline>>,
     pub mixer: Arc<AudioMixer>,
     pub db: Database,
     levels_callback: Option<AudioLevelsCallback>,
+    local_level_callback: Option<Arc<dyn Fn(f32, f32) + Send + Sync>>,
+    app_handle: Option<tauri::AppHandle>,
     is_running: Arc<AtomicBool>,
     levels_cancel: Arc<AtomicBool>,
+    is_mic_test_active: Arc<AtomicBool>,
+    is_meter_active: Arc<AtomicBool>,
     local_node_id: Arc<RwLock<String>>,
 }
 
 impl AudioManager {
     pub fn new(db: Database, app_handle: Option<tauri::AppHandle>) -> Arc<Self> {
-        let levels_cb: Option<AudioLevelsCallback> = app_handle.map(|app| {
+        let levels_cb: Option<AudioLevelsCallback> = app_handle.as_ref().map(|app| {
             let app_handle = app.clone();
             let cb: AudioLevelsCallback = Arc::new(move |levels: &HashMap<String, f32>| {
                 use tauri::Emitter;
@@ -51,15 +55,30 @@ impl AudioManager {
             });
             cb
         });
-        Self::with_callback(db, levels_cb)
+        Self::with_options(db, levels_cb, None, app_handle)
     }
 
     pub fn with_callback(
         db: Database,
         levels_cb: Option<AudioLevelsCallback>,
     ) -> Arc<Self> {
+        Self::with_options(db, levels_cb, None, None)
+    }
+
+    pub fn with_options(
+        db: Database,
+        levels_cb: Option<AudioLevelsCallback>,
+        local_level_cb: Option<Arc<dyn Fn(f32, f32) + Send + Sync>>,
+        app_handle: Option<tauri::AppHandle>,
+    ) -> Arc<Self> {
         let capture_pipeline = AudioCapturePipeline::new(AudioCaptureConfig::default());
         let mixer = Arc::new(AudioMixer::new());
+
+        let mixer_loopback = mixer.clone();
+        capture_pipeline.set_loopback_sender(Some(Arc::new(move |samples: &[f32]| {
+            mixer_loopback.push_loopback_samples(samples);
+        })));
+
         let playback_pipeline =
             AudioPlaybackPipeline::new(AudioPlaybackConfig::default(), mixer.clone());
 
@@ -69,8 +88,12 @@ impl AudioManager {
             mixer,
             db,
             levels_callback: levels_cb,
+            local_level_callback: local_level_cb,
+            app_handle,
             is_running: Arc::new(AtomicBool::new(false)),
             levels_cancel: Arc::new(AtomicBool::new(false)),
+            is_mic_test_active: Arc::new(AtomicBool::new(false)),
+            is_meter_active: Arc::new(AtomicBool::new(false)),
             local_node_id: Arc::new(RwLock::new("local_node".to_string())),
         })
     }
@@ -115,6 +138,7 @@ impl AudioManager {
         // Launch throttled 50ms volume levels emission task
         self.levels_cancel.store(false, Ordering::Release);
         self.spawn_levels_task();
+        self.spawn_local_level_task();
 
         Ok(())
     }
@@ -155,6 +179,57 @@ impl AudioManager {
                 // 3. Emit via callback closure if provided
                 if let Some(ref cb) = levels_cb {
                     cb(&levels_map);
+                }
+            }
+        };
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(task_fn);
+        } else {
+            tauri::async_runtime::spawn(task_fn);
+        }
+    }
+
+    /// Spawns background Tokio task running every 30ms that samples local microphone RMS,
+    /// converts to dB and percent, and emits `audio://local-input-level`.
+    fn spawn_local_level_task(self: &Arc<Self>) {
+        let cancel = self.levels_cancel.clone();
+        let capture = self.capture.clone();
+        let is_mic_test = self.is_mic_test_active.clone();
+        let is_meter = self.is_meter_active.clone();
+        let app_handle = self.app_handle.clone();
+        let local_cb = self.local_level_callback.clone();
+
+        let task_fn = async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(30));
+            while !cancel.load(Ordering::Acquire) {
+                interval.tick().await;
+
+                if is_mic_test.load(Ordering::Acquire) || is_meter.load(Ordering::Acquire) {
+                    let rms = if let Ok(cap) = capture.lock() {
+                        cap.get_test_mic_level()
+                    } else {
+                        0.0
+                    };
+
+                    let db = if rms > 1e-5 {
+                        (20.0 * rms.log10()).max(-60.0)
+                    } else {
+                        -60.0
+                    };
+                    let percent = ((db + 60.0) / 60.0 * 100.0).clamp(0.0, 100.0);
+
+                    if let Some(ref cb) = local_cb {
+                        cb(db, percent);
+                    }
+
+                    if let Some(ref app) = app_handle {
+                        use tauri::Emitter;
+                        let _ = app.emit(
+                            crate::ipc::events::EVENT_LOCAL_INPUT_LEVEL,
+                            crate::ipc::events::LocalInputLevelPayload { db, percent },
+                        );
+                    }
                 }
             }
         };
@@ -258,6 +333,57 @@ impl AudioManager {
     pub fn set_rnnoise(&self, enabled: bool) {
         if let Ok(cap) = self.capture.lock() {
             cap.set_noise_suppression(enabled);
+        }
+    }
+
+    pub fn set_mic_test(&self, enabled: bool) {
+        self.mixer.set_mic_test(enabled);
+        if let Ok(mut cap) = self.capture.lock() {
+            cap.set_mic_test(enabled);
+            if enabled && !cap.is_running() {
+                let _ = cap.start(None);
+            }
+        }
+        if enabled {
+            if let Ok(mut play) = self.playback.lock() {
+                if !play.is_running() {
+                    let _ = play.start(None);
+                }
+            }
+        }
+        self.is_mic_test_active.store(enabled, Ordering::Release);
+    }
+
+    pub fn is_mic_test_active(&self) -> bool {
+        self.is_mic_test_active.load(Ordering::Acquire)
+    }
+
+    pub fn set_meter_active(&self, active: bool) {
+        self.is_meter_active.store(active, Ordering::Release);
+        if active {
+            if let Ok(mut cap) = self.capture.lock() {
+                if !cap.is_running() {
+                    let _ = cap.start(None);
+                }
+            }
+        }
+    }
+
+    pub fn is_meter_active(&self) -> bool {
+        self.is_meter_active.load(Ordering::Acquire)
+    }
+
+    pub fn set_vad_threshold(&self, threshold: f32) {
+        if let Ok(cap) = self.capture.lock() {
+            cap.set_vad_threshold(threshold);
+        }
+    }
+
+    pub fn get_vad_threshold(&self) -> f32 {
+        if let Ok(cap) = self.capture.lock() {
+            cap.config.read().unwrap().voice_activation_threshold
+        } else {
+            0.45
         }
     }
 
@@ -370,6 +496,39 @@ mod tests {
             assert!(
                 called.load(Ordering::SeqCst) >= 1,
                 "Levels callback should fire at least once"
+            );
+        });
+    }
+
+    #[test]
+    fn test_local_level_callback_and_mic_test() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let db = Database::new_in_memory().unwrap();
+            let called = Arc::new(AtomicUsize::new(0));
+            let called_clone = called.clone();
+
+            let local_cb = Arc::new(move |_db: f32, _percent: f32| {
+                called_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+            let mgr = AudioManager::with_options(db, None, Some(local_cb), None);
+            mgr.set_mic_test(true);
+            assert!(mgr.is_mic_test_active());
+
+            mgr.spawn_local_level_task();
+
+            // Wait 100ms (at least 2 ticks of 30ms)
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            mgr.stop();
+            assert!(
+                called.load(Ordering::SeqCst) >= 1,
+                "Local input meter callback should fire when mic test is enabled"
             );
         });
     }

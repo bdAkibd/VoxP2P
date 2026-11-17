@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import type { Message, UserProfile, TransferProgressPayload } from "../types";
   import { api } from "../api";
   import { detectThemeInText, applyTheme, type ThemeConfig } from "../theme";
@@ -46,8 +47,38 @@
       unlisten = u;
     });
 
+    // Native Tauri v2 window drag-and-drop listener
+    let unlistenNativeDragDrop: (() => void) | undefined;
+    try {
+      getCurrentWebview().onDragDropEvent(async (event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          isDragging = true;
+        } else if (event.payload.type === "leave") {
+          isDragging = false;
+        } else if (event.payload.type === "drop") {
+          isDragging = false;
+          const paths = event.payload.paths;
+          if (paths && paths.length > 0) {
+            for (const filePath of paths) {
+              const filename = filePath.split(/[/\\]/).pop() || filePath;
+              try {
+                await api.attachFile(filePath, activeChatId, `Shared file: ${filename}`);
+              } catch (err) {
+                console.error("Failed to upload dropped file via native drag-drop:", err);
+              }
+            }
+          }
+        }
+      }).then((u) => {
+        unlistenNativeDragDrop = u;
+      }).catch(console.warn);
+    } catch (e) {
+      console.warn("Native drag-drop event registration skipped:", e);
+    }
+
     return () => {
       unlisten?.();
+      unlistenNativeDragDrop?.();
     };
   });
 
@@ -182,7 +213,8 @@
     <div class="drag-overlay">
       <div class="drag-box">
         <span class="drag-icon">📁</span>
-        <span>Drop file here to send via P2P iroh-blobs</span>
+        <span class="drag-title">Drop files to send via P2P</span>
+        <span class="drag-desc">Instant zero-server transfer via iroh-blobs</span>
       </div>
     </div>
   {/if}
@@ -367,25 +399,40 @@
   .drag-overlay {
     position: absolute;
     inset: 0;
-    background: rgba(0, 0, 0, 0.75);
+    background: rgba(0, 0, 0, 0.78);
+    backdrop-filter: blur(6px);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 50;
+    pointer-events: none;
   }
 
   .drag-box {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
-    color: #ffffff;
-    font-size: 1.1rem;
-    font-weight: 600;
+    gap: 10px;
+    padding: 32px 48px;
+    background: var(--surface-card);
+    border: 2px dashed var(--accent-primary);
+    border-radius: var(--border-radius);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
   }
 
   .drag-icon {
-    font-size: 3rem;
+    font-size: 3.2rem;
+  }
+
+  .drag-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .drag-desc {
+    font-size: 0.82rem;
+    color: var(--text-muted);
   }
 
   .chat-header {

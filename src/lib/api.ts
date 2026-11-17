@@ -13,6 +13,7 @@ import type {
   ImportSyncResult,
   DirectCallRingPayload,
   MessageDeliveredPayload,
+  LocalInputLevelPayload,
 } from "./types";
 
 export const api = {
@@ -77,6 +78,18 @@ export const api = {
 
   async setRNNoise(enabled: boolean): Promise<void> {
     return await invoke("set_rnnoise", { enabled });
+  },
+
+  async setMicTest(enabled: boolean): Promise<void> {
+    return await invoke("set_mic_test", { enabled });
+  },
+
+  async setMeterActive(active: boolean): Promise<void> {
+    return await invoke("set_meter_active", { active });
+  },
+
+  async setVadThreshold(threshold: number): Promise<void> {
+    return await invoke("set_vad_threshold", { threshold });
   },
 
   async setBypassVpn(bypass: boolean): Promise<void> {
@@ -235,6 +248,12 @@ export const api = {
 
   onTransferProgress(callback: (payload: TransferProgressPayload) => void): Promise<UnlistenFn> {
     return listen<TransferProgressPayload>("transfer://progress", (event) => {
+      callback(event.payload);
+    });
+  },
+
+  onLocalInputLevel(callback: (payload: LocalInputLevelPayload) => void): Promise<UnlistenFn> {
+    return listen<LocalInputLevelPayload>("audio://local-input-level", (event) => {
       callback(event.payload);
     });
   },

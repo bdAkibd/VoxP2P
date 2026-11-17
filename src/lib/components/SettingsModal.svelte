@@ -25,6 +25,12 @@
   let masterVolume = $state<number>(1.0);
   let rnnoiseEnabled = $state<boolean>(true);
 
+  // Mic Test & VAD State
+  let isTestingMic = $state<boolean>(false);
+  let localInputLevel = $state<{ db: number; percent: number }>({ db: -60, percent: 0 });
+  let vadThreshold = $state<number>(0.45);
+  let smoothedPercent = $state<number>(0);
+
   // Network State
   let vpnBypassEnabled = $state<boolean>(true);
 
@@ -48,7 +54,62 @@
       const defOut = outputDevices.find((d) => d.is_default);
       if (defOut) selectedOutput = defOut.name;
     });
+
+    let unlistenLocalLevel: (() => void) | undefined;
+
+    // Activate local meter when in audio tab
+    if (activeTab === "audio") {
+      api.setMeterActive(true).catch(console.error);
+      api.onLocalInputLevel((payload) => {
+        localInputLevel = payload;
+        smoothedPercent = payload.percent;
+      }).then((u) => {
+        unlistenLocalLevel = u;
+      });
+    } else {
+      if (isTestingMic) {
+        isTestingMic = false;
+        api.setMicTest(false).catch(console.error);
+      }
+      api.setMeterActive(false).catch(console.error);
+    }
+
+    return () => {
+      unlistenLocalLevel?.();
+      if (isTestingMic) {
+        api.setMicTest(false).catch(console.error);
+      }
+      api.setMeterActive(false).catch(console.error);
+    };
   });
+
+  function handleModalClose() {
+    if (isTestingMic) {
+      isTestingMic = false;
+      api.setMicTest(false).catch(console.error);
+    }
+    api.setMeterActive(false).catch(console.error);
+    onClose();
+  }
+
+  async function handleToggleMicTest() {
+    isTestingMic = !isTestingMic;
+    try {
+      await api.setMicTest(isTestingMic);
+    } catch (err) {
+      console.error("Failed to toggle mic test:", err);
+      isTestingMic = false;
+    }
+  }
+
+  async function handleVadThresholdChange(threshold: number) {
+    vadThreshold = threshold;
+    try {
+      await api.setVadThreshold(threshold);
+    } catch (err) {
+      console.error("Failed to set VAD threshold:", err);
+    }
+  }
 
   async function handleInputDeviceChange(name: string) {
     selectedInput = name;
@@ -118,8 +179,8 @@
 
 <div
   class="modal-backdrop"
-  onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-  onkeydown={(e) => e.key === "Escape" && onClose()}
+  onclick={(e) => { if (e.target === e.currentTarget) handleModalClose(); }}
+  onkeydown={(e) => e.key === "Escape" && handleModalClose()}
   role="dialog"
   aria-modal="true"
   tabindex="-1"
@@ -157,7 +218,7 @@
           📱 Device Linking
         </button>
       </div>
-      <button class="dialog-close-btn" onclick={onClose}>&times;</button>
+      <button class="dialog-close-btn" onclick={handleModalClose}>&times;</button>
     </div>
 
     <!-- Dialog Content Body -->
@@ -249,6 +310,85 @@
             >
               <span class="switch-handle"></span>
             </button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="setting-header-with-action">
+            <div>
+              <h4>Microphone Test & Input Sensitivity</h4>
+              <div class="toggle-desc">Test your microphone input and listen to your processed voice in real-time.</div>
+            </div>
+            <button
+              class="mic-test-btn"
+              class:active={isTestingMic}
+              onclick={handleToggleMicTest}
+            >
+              {#if isTestingMic}
+                <span class="pulse-dot"></span> Stop Testing / Остановить
+              {:else}
+                🎤 Let's Check / Проверить микрофон
+              {/if}
+            </button>
+          </div>
+
+          <div class="mic-meter-card">
+            <div class="meter-labels-row">
+              <span class="meter-label-title">INPUT LEVEL</span>
+              <span class="meter-level-val" class:speaking={localInputLevel.percent >= vadThreshold * 100}>
+                {localInputLevel.db <= -59.0 ? "Quiet (-∞ dB)" : `${localInputLevel.db.toFixed(1)} dB (${Math.round(localInputLevel.percent)}%)`}
+              </span>
+            </div>
+
+            <div class="meter-track-wrapper">
+              <div class="segmented-track">
+                {#each Array(32) as _, idx}
+                  {@const segPercent = (idx / 32) * 100}
+                  {@const isActive = smoothedPercent >= segPercent}
+                  {@const isSpeechOpen = smoothedPercent >= (vadThreshold * 100)}
+                  <div
+                    class="meter-segment"
+                    class:active={isActive}
+                    class:speech-open={isActive && isSpeechOpen}
+                    class:gated={isActive && !isSpeechOpen}
+                    class:tier-yellow={idx >= 20 && idx < 27}
+                    class:tier-red={idx >= 27}
+                  ></div>
+                {/each}
+              </div>
+
+              <!-- Draggable / Visual VAD threshold notch marker -->
+              <div
+                class="vad-marker-notch"
+                style="left: {vadThreshold * 100}%"
+                title="Input Sensitivity Threshold: {Math.round(vadThreshold * 100)}%"
+              >
+                <div class="vad-notch-caret"></div>
+                <div class="vad-notch-line"></div>
+              </div>
+            </div>
+
+            <div class="threshold-control-row">
+              <div class="threshold-label-wrap">
+                <label for="vad-threshold-slider">Input Sensitivity Threshold (VAD Gate)</label>
+                <span class="threshold-val-badge" class:open={localInputLevel.percent >= vadThreshold * 100}>
+                  {Math.round(vadThreshold * 100)}% ({localInputLevel.percent >= vadThreshold * 100 ? "VOICE ACTIVE" : "GATE CLOSED"})
+                </span>
+              </div>
+              <input
+                id="vad-threshold-slider"
+                type="range"
+                min="0.05"
+                max="0.95"
+                step="0.01"
+                value={vadThreshold}
+                oninput={(e) => handleVadThresholdChange(parseFloat((e.target as HTMLInputElement).value))}
+                class="vad-slider"
+              />
+              <div class="threshold-hint">
+                Drag the marker so ambient room noise stays below the gate, and speaking lights up the meter.
+              </div>
+            </div>
           </div>
         </div>
 
@@ -673,5 +813,208 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+
+  /* Mic Test & Discord Meter Styles */
+  .setting-header-with-action {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .mic-test-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 8px 14px;
+    font-size: 0.84rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s ease;
+  }
+
+  .mic-test-btn:hover {
+    border-color: var(--accent-primary);
+    background: var(--surface-card);
+  }
+
+  .mic-test-btn.active {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: var(--danger-color);
+    color: var(--danger-color);
+  }
+
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--danger-color);
+    box-shadow: 0 0 8px var(--danger-color);
+    animation: pulse 1s infinite alternate;
+  }
+
+  @keyframes pulse {
+    0% { opacity: 0.4; transform: scale(0.9); }
+    100% { opacity: 1; transform: scale(1.2); }
+  }
+
+  .mic-meter-card {
+    background: var(--surface-card);
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .meter-labels-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+
+  .meter-label-title {
+    color: var(--text-muted);
+  }
+
+  .meter-level-val {
+    color: var(--text-muted);
+    font-family: monospace;
+    transition: color 0.1s ease;
+  }
+
+  .meter-level-val.speaking {
+    color: var(--online-status-color);
+    font-weight: 700;
+  }
+
+  .meter-track-wrapper {
+    position: relative;
+    width: 100%;
+    height: 24px;
+    display: flex;
+    align-items: center;
+  }
+
+  .segmented-track {
+    display: flex;
+    width: 100%;
+    height: 16px;
+    gap: 3px;
+    background: var(--bg-primary);
+    padding: 3px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    box-sizing: border-box;
+  }
+
+  .meter-segment {
+    flex: 1;
+    height: 100%;
+    border-radius: 1px;
+    background: rgba(255, 255, 255, 0.06);
+    transition: background 0.04s ease-out;
+  }
+
+  /* Segment Lighting Levels */
+  .meter-segment.active.gated {
+    background: rgba(140, 145, 155, 0.5); /* Ambient sound below threshold */
+  }
+
+  .meter-segment.active.speech-open {
+    background: #23a55a; /* Discord green */
+    box-shadow: 0 0 3px rgba(35, 165, 90, 0.8);
+  }
+
+  .meter-segment.active.speech-open.tier-yellow {
+    background: #f0b232; /* Discord yellow/gold */
+    box-shadow: 0 0 4px rgba(240, 178, 50, 0.8);
+  }
+
+  .meter-segment.active.speech-open.tier-red {
+    background: #f23f43; /* Discord red peak */
+    box-shadow: 0 0 5px rgba(242, 63, 67, 0.9);
+  }
+
+  .vad-marker-notch {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+    pointer-events: none;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .vad-notch-caret {
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #ffffff;
+  }
+
+  .vad-notch-line {
+    flex: 1;
+    width: 2px;
+    background: #ffffff;
+    opacity: 0.85;
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.6);
+  }
+
+  .threshold-control-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .threshold-label-wrap {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .threshold-val-badge {
+    font-size: 0.74rem;
+    font-weight: 700;
+    font-family: monospace;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+  }
+
+  .threshold-val-badge.open {
+    background: rgba(35, 165, 90, 0.2);
+    color: #23a55a;
+    border: 1px solid rgba(35, 165, 90, 0.4);
+  }
+
+  .vad-slider {
+    width: 100%;
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+  }
+
+  .threshold-hint {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    font-style: italic;
   }
 </style>

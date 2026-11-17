@@ -150,6 +150,36 @@ pub fn set_master_volume(
     Ok(())
 }
 
+#[tauri::command]
+pub fn set_mic_test(
+    enabled: bool,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    audio_manager.set_mic_test(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_meter_active(
+    active: bool,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    audio_manager.set_meter_active(active);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_vad_threshold(
+    threshold: f32,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    if !(0.0..=1.0).contains(&threshold) {
+        return Err("Threshold out of range [0.0, 1.0]".to_string());
+    }
+    audio_manager.set_vad_threshold(threshold);
+    Ok(())
+}
+
 
 #[tauri::command]
 pub async fn transfer_host(

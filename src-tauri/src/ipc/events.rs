@@ -4,6 +4,7 @@ use crate::storage::models::ChatMessage;
 
 pub const EVENT_VOLUME_LEVELS: &str = "voxp2p://volume-levels";
 pub const EVENT_AUDIO_LEVELS: &str = "audio://levels";
+pub const EVENT_LOCAL_INPUT_LEVEL: &str = "audio://local-input-level";
 pub const EVENT_ROOM_STATE: &str = "voxp2p://room-state";
 
 pub const EVENT_CHAT_MESSAGE: &str = "voxp2p://chat-message";
@@ -19,6 +20,12 @@ pub const EVENT_PEERS_UPDATED: &str = "room://peers-updated";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeLevelsPayload {
     pub levels: Vec<PeerVolumeLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalInputLevelPayload {
+    pub db: f32,
+    pub percent: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

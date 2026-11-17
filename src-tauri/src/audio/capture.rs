@@ -12,6 +12,7 @@ pub const RNNOISE_CHUNK_SAMPLES: usize = 480; // 10ms at 48kHz
 pub const VAD_HANGOVER_FRAMES: u32 = 10; // 200ms hangover after speech stops
 
 pub type AudioPacketSender = Arc<dyn Fn(u64, Vec<u8>) + Send + Sync>;
+pub type AudioLoopbackSender = Arc<dyn Fn(&[f32]) + Send + Sync>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioDeviceInfo {
@@ -89,11 +90,14 @@ pub struct AudioCapturePipeline {
     is_running: Arc<AtomicBool>,
     is_muted: Arc<AtomicBool>,
     mic_level: Arc<AtomicU32>,
+    mic_test_level: Arc<AtomicU32>,
+    is_mic_test: Arc<AtomicBool>,
     packet_seq: Arc<AtomicU64>,
     hangover_frames: Arc<AtomicU32>,
     denoise_state: Arc<Mutex<Box<DenoiseState<'static>>>>,
     encoder: Arc<Mutex<AudioEncoder>>,
     packet_sender: Arc<RwLock<Option<AudioPacketSender>>>,
+    loopback_sender: Arc<RwLock<Option<AudioLoopbackSender>>>,
     local_node_id: Arc<RwLock<String>>,
     stream: Option<cpal::Stream>,
 }
@@ -110,11 +114,14 @@ impl AudioCapturePipeline {
             is_running: Arc::new(AtomicBool::new(false)),
             is_muted: Arc::new(AtomicBool::new(false)),
             mic_level: Arc::new(AtomicU32::new(f32_to_atomic(0.0))),
+            mic_test_level: Arc::new(AtomicU32::new(f32_to_atomic(0.0))),
+            is_mic_test: Arc::new(AtomicBool::new(false)),
             packet_seq: Arc::new(AtomicU64::new(0)),
             hangover_frames: Arc::new(AtomicU32::new(0)),
             denoise_state: Arc::new(Mutex::new(denoise_state)),
             encoder: Arc::new(Mutex::new(encoder)),
             packet_sender: Arc::new(RwLock::new(None)),
+            loopback_sender: Arc::new(RwLock::new(None)),
             local_node_id: Arc::new(RwLock::new("local_node".to_string())),
             stream: None,
         }
@@ -133,6 +140,23 @@ impl AudioCapturePipeline {
     pub fn set_packet_sender(&self, sender: Option<AudioPacketSender>) {
         let mut ps = self.packet_sender.write().unwrap();
         *ps = sender;
+    }
+
+    pub fn set_loopback_sender(&self, sender: Option<AudioLoopbackSender>) {
+        let mut ls = self.loopback_sender.write().unwrap();
+        *ls = sender;
+    }
+
+    pub fn set_mic_test(&self, enabled: bool) {
+        self.is_mic_test.store(enabled, Ordering::Release);
+    }
+
+    pub fn is_mic_test(&self) -> bool {
+        self.is_mic_test.load(Ordering::Acquire)
+    }
+
+    pub fn get_test_mic_level(&self) -> f32 {
+        atomic_to_f32(self.mic_test_level.load(Ordering::Acquire))
     }
 
     pub fn set_muted(&self, muted: bool) {
@@ -224,6 +248,13 @@ impl AudioCapturePipeline {
 
         // 3. Compute frame RMS volume level
         let rms = compute_rms_level(&denoised_frame);
+        self.mic_test_level.store(f32_to_atomic(rms), Ordering::Release);
+
+        if self.is_mic_test.load(Ordering::Acquire) {
+            if let Some(ref sender) = *self.loopback_sender.read().unwrap() {
+                sender(&denoised_frame);
+            }
+        }
 
         if is_muted {
             self.mic_level.store(f32_to_atomic(0.0), Ordering::Release);
@@ -426,11 +457,14 @@ impl AudioCapturePipeline {
             config: self.config.clone(),
             is_muted: self.is_muted.clone(),
             mic_level: self.mic_level.clone(),
+            mic_test_level: self.mic_test_level.clone(),
+            is_mic_test: self.is_mic_test.clone(),
             packet_seq: self.packet_seq.clone(),
             hangover_frames: self.hangover_frames.clone(),
             denoise_state: self.denoise_state.clone(),
             encoder: self.encoder.clone(),
             packet_sender: self.packet_sender.clone(),
+            loopback_sender: self.loopback_sender.clone(),
         }
     }
 }
@@ -440,11 +474,14 @@ struct DspHandles {
     config: Arc<RwLock<AudioCaptureConfig>>,
     is_muted: Arc<AtomicBool>,
     mic_level: Arc<AtomicU32>,
+    mic_test_level: Arc<AtomicU32>,
+    is_mic_test: Arc<AtomicBool>,
     packet_seq: Arc<AtomicU64>,
     hangover_frames: Arc<AtomicU32>,
     denoise_state: Arc<Mutex<Box<DenoiseState<'static>>>>,
     encoder: Arc<Mutex<AudioEncoder>>,
     packet_sender: Arc<RwLock<Option<AudioPacketSender>>>,
+    loopback_sender: Arc<RwLock<Option<AudioLoopbackSender>>>,
 }
 
 impl DspHandles {
@@ -487,6 +524,13 @@ impl DspHandles {
 
 
         let rms = compute_rms_level(&denoised_frame);
+        self.mic_test_level.store(f32_to_atomic(rms), Ordering::Release);
+
+        if self.is_mic_test.load(Ordering::Acquire) {
+            if let Some(ref sender) = *self.loopback_sender.read().unwrap() {
+                sender(&denoised_frame);
+            }
+        }
 
         if is_muted {
             self.mic_level.store(f32_to_atomic(0.0), Ordering::Release);
@@ -580,5 +624,28 @@ mod tests {
         assert_eq!(seq, 1);
         assert!(!packet.is_empty());
         assert!(pipeline.get_mic_level() > 0.0);
+    }
+
+    #[test]
+    fn test_dsp_mic_loopback_and_test_level() {
+        let pipeline = AudioCapturePipeline::new(AudioCaptureConfig::default());
+        let loopback_called = Arc::new(AtomicBool::new(false));
+        let loopback_clone = loopback_called.clone();
+
+        pipeline.set_loopback_sender(Some(Arc::new(move |_samples| {
+            loopback_clone.store(true, Ordering::SeqCst);
+        })));
+
+        let tone = [0.4f32; OPUS_FRAME_SAMPLES];
+
+        // Disabled mic test: sender not called
+        let _ = pipeline.process_frame_dsp(&tone);
+        assert!(!loopback_called.load(Ordering::SeqCst));
+        assert!(pipeline.get_test_mic_level() > 0.0);
+
+        // Enabled mic test: sender called
+        pipeline.set_mic_test(true);
+        let _ = pipeline.process_frame_dsp(&tone);
+        assert!(loopback_called.load(Ordering::SeqCst));
     }
 }

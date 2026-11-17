@@ -10,6 +10,7 @@ use super::codec::{AudioDecoder, OPUS_FRAME_SAMPLES};
 use crate::network::room::AudioPacket;
 
 pub const JITTER_BUFFER_CAPACITY: usize = OPUS_FRAME_SAMPLES * 10; // 9600 samples (200ms)
+pub const LOOPBACK_BUFFER_CAPACITY: usize = OPUS_FRAME_SAMPLES * 10; // 9600 samples (200ms)
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerVolumeLevel {
@@ -175,6 +176,9 @@ pub struct AudioMixer {
     latest_peer_levels: Arc<RwLock<HashMap<String, f32>>>,
     master_volume: AtomicU32,
     is_deafened: AtomicBool,
+    is_mic_test_enabled: Arc<AtomicBool>,
+    loopback_producer: Mutex<ringbuf::HeapProd<f32>>,
+    loopback_consumer: Mutex<ringbuf::HeapCons<f32>>,
 }
 
 impl Default for AudioMixer {
@@ -185,11 +189,45 @@ impl Default for AudioMixer {
 
 impl AudioMixer {
     pub fn new() -> Self {
+        let rb = HeapRb::<f32>::new(LOOPBACK_BUFFER_CAPACITY);
+        let (loopback_producer, loopback_consumer) = rb.split();
+
         Self {
             peers: Arc::new(RwLock::new(HashMap::new())),
             latest_peer_levels: Arc::new(RwLock::new(HashMap::new())),
             master_volume: AtomicU32::new(f32_to_atomic(1.0)),
             is_deafened: AtomicBool::new(false),
+            is_mic_test_enabled: Arc::new(AtomicBool::new(false)),
+            loopback_producer: Mutex::new(loopback_producer),
+            loopback_consumer: Mutex::new(loopback_consumer),
+        }
+    }
+
+    pub fn set_mic_test(&self, enabled: bool) {
+        self.is_mic_test_enabled.store(enabled, Ordering::Release);
+        if !enabled {
+            if let Ok(mut cons) = self.loopback_consumer.lock() {
+                cons.clear();
+            }
+        }
+    }
+
+    pub fn is_mic_test_enabled(&self) -> bool {
+        self.is_mic_test_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn push_loopback_samples(&self, samples: &[f32]) {
+        if !self.is_mic_test_enabled() {
+            return;
+        }
+        if let Ok(mut prod) = self.loopback_producer.lock() {
+            if prod.vacant_len() < samples.len() {
+                if let Ok(mut cons) = self.loopback_consumer.lock() {
+                    let overflow = samples.len().saturating_sub(prod.vacant_len());
+                    let _ = cons.skip(overflow);
+                }
+            }
+            let _ = prod.push_slice(samples);
         }
     }
 
@@ -281,6 +319,9 @@ impl AudioMixer {
                 peer.clear();
                 peer_levels.insert(node_id.clone(), 0.0);
             }
+            if let Ok(mut cons) = self.loopback_consumer.lock() {
+                cons.clear();
+            }
             return;
         }
 
@@ -303,6 +344,17 @@ impl AudioMixer {
                 let peer_gain = peer.get_volume() * master_gain;
                 for i in 0..output.len() {
                     output[i] += scratch[i] * peer_gain;
+                }
+            }
+        }
+
+        // Mix in microphone loopback test samples if enabled
+        if self.is_mic_test_enabled() {
+            let mut loopback_scratch = vec![0.0f32; output.len()];
+            if let Ok(mut cons) = self.loopback_consumer.lock() {
+                let read = cons.pop_slice(&mut loopback_scratch);
+                for i in 0..read {
+                    output[i] += loopback_scratch[i] * master_gain;
                 }
             }
         }
@@ -409,5 +461,34 @@ mod tests {
             assert_eq!(*s, 0.0);
         }
         assert_eq!(peer_levels["peer_deaf"], 0.0);
+    }
+
+    #[test]
+    fn test_loopback_mixing() {
+        let mixer = AudioMixer::new();
+        assert!(!mixer.is_mic_test_enabled());
+
+        let test_pcm = [0.3f32; OPUS_FRAME_SAMPLES];
+        // When disabled, push does nothing
+        mixer.push_loopback_samples(&test_pcm);
+
+        let mut output = [0.0f32; OPUS_FRAME_SAMPLES];
+        let mut peer_levels = HashMap::new();
+        mixer.mix_output(&mut output, &mut peer_levels);
+        assert_eq!(output[0], 0.0);
+
+        // When enabled, push samples and mix
+        mixer.set_mic_test(true);
+        assert!(mixer.is_mic_test_enabled());
+        mixer.push_loopback_samples(&test_pcm);
+
+        mixer.mix_output(&mut output, &mut peer_levels);
+        assert!(output[0] > 0.0);
+
+        // Disabling clears buffer
+        mixer.set_mic_test(false);
+        assert!(!mixer.is_mic_test_enabled());
+        mixer.mix_output(&mut output, &mut peer_levels);
+        assert_eq!(output[0], 0.0);
     }
 }

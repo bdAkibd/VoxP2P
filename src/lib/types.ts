@@ -98,3 +98,8 @@ export interface DirectCallRingPayload {
 export interface MessageDeliveredPayload {
   message_id: string;
 }
+
+export interface LocalInputLevelPayload {
+  db: number;
+  percent: number;
+}
