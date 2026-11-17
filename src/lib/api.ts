@@ -109,6 +109,14 @@ export const api = {
     return await invoke("set_bypass_vpn", { bypass });
   },
 
+  async getAppSettings(): Promise<Record<string, string>> {
+    return await invoke<Record<string, string>>("get_app_settings");
+  },
+
+  async setAppSetting(key: string, value: string): Promise<void> {
+    return await invoke("set_app_setting", { key, value });
+  },
+
   async transferHost(targetNodeId: string): Promise<void> {
     return await invoke("transfer_host", { targetNodeId });
   },

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension, Result};
@@ -60,6 +61,14 @@ impl Database {
                 attachment_name TEXT,
                 timestamp INTEGER NOT NULL,
                 delivered INTEGER DEFAULT 0
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )",
             [],
         )?;
@@ -399,6 +408,41 @@ impl Database {
         conn.execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
         Ok(())
     }
+
+    // --- App Settings CRUD ---
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?1")?;
+        let mut rows = stmt.query([key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_all_settings(&self) -> Result<HashMap<String, String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT key, value FROM app_settings")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut map = HashMap::new();
+        for r in rows {
+            let (k, v) = r?;
+            map.insert(k, v);
+        }
+        Ok(map)
+    }
 }
 
 
@@ -517,5 +561,25 @@ mod tests {
             .unwrap();
         assert_eq!(empty_nick.nickname, "Charlie_Renamed");
         assert_eq!(empty_nick.avatar_path, Some("hash_avatar_3".to_string()));
+    }
+
+    #[test]
+    fn test_app_settings_crud() {
+        let db = Database::new_in_memory().expect("db init failed");
+        assert_eq!(db.get_setting("bypass_vpn").unwrap(), None);
+
+        db.set_setting("bypass_vpn", "true").unwrap();
+        assert_eq!(db.get_setting("bypass_vpn").unwrap(), Some("true".to_string()));
+
+        db.set_setting("bypass_vpn", "false").unwrap();
+        assert_eq!(db.get_setting("bypass_vpn").unwrap(), Some("false".to_string()));
+
+        db.set_setting("rnnoise_enabled", "true").unwrap();
+        db.set_setting("vad_threshold", "0.45").unwrap();
+
+        let all = db.get_all_settings().unwrap();
+        assert_eq!(all.get("bypass_vpn"), Some(&"false".to_string()));
+        assert_eq!(all.get("rnnoise_enabled"), Some(&"true".to_string()));
+        assert_eq!(all.get("vad_threshold"), Some(&"0.45".to_string()));
     }
 }

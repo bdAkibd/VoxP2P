@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { UserProfile, Contact, RoomState } from "../types";
   import { api } from "../api";
+  import Avatar from "./Avatar.svelte";
 
   let {
     profile,
@@ -34,27 +35,6 @@
   let copyFeedback = $state(false);
   let isEditingNickname = $state(false);
   let nicknameDraft = $state("");
-  let avatarCache = $state<Record<string, string>>({});
-
-  $effect(() => {
-    if (profile?.avatar_hash && !avatarCache[profile.avatar_hash]) {
-      const hash = profile.avatar_hash;
-      api.getAvatar(hash).then((url) => {
-        if (url) avatarCache[hash] = url;
-      });
-    }
-  });
-
-  $effect(() => {
-    contacts.forEach((c) => {
-      if (c.avatar_path && !avatarCache[c.avatar_path]) {
-        const cleanHash = c.avatar_path.replace(/.*[/\\]/, "").replace(/\.png$/, "");
-        api.getAvatar(cleanHash).then((url) => {
-          if (url && c.avatar_path) avatarCache[c.avatar_path] = url;
-        });
-      }
-    });
-  });
 
   function formatShortId(id: string): string {
     if (!id) return "";
@@ -199,11 +179,11 @@
             }}
           >
             <div class="contact-avatar">
-              {#if contact.avatar_path && avatarCache[contact.avatar_path]}
-                <img src={avatarCache[contact.avatar_path]} alt="Avatar" class="avatar-sidebar-img" />
-              {:else}
-                {contact.nickname.slice(0, 1).toUpperCase()}
-              {/if}
+              <Avatar
+                hash={contact.avatar_path}
+                nickname={contact.nickname}
+                size={32}
+              />
               <span class="online-indicator"></span>
             </div>
             <div class="contact-info">
@@ -239,13 +219,13 @@
         role="button"
         tabindex="0"
         onkeydown={(e) => e.key === "Enter" && onOpenSettings()}
-        title="Настройки профиля"
+        title="Profile Settings"
       >
-        {#if profile?.avatar_hash && avatarCache[profile.avatar_hash]}
-          <img src={avatarCache[profile.avatar_hash]} alt="Avatar" class="avatar-sidebar-img" />
-        {:else}
-          {profile?.nickname ? profile.nickname.slice(0, 1).toUpperCase() : "U"}
-        {/if}
+        <Avatar
+          hash={profile?.avatar_hash}
+          nickname={profile?.nickname}
+          size={38}
+        />
       </div>
       <span class="online-indicator"></span>
     </div>
@@ -698,14 +678,6 @@
 
   .user-avatar:hover {
     transform: scale(1.05);
-  }
-
-  .avatar-sidebar-img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    border-radius: 50%;
-    display: block;
   }
 
   .user-info {

@@ -12,6 +12,7 @@
   import { api } from "../api";
   import ThemeStudio from "./ThemeStudio.svelte";
   import AvatarCropperModal from "./AvatarCropperModal.svelte";
+  import Avatar from "./Avatar.svelte";
   import { scan, Format } from "@tauri-apps/plugin-barcode-scanner";
 
   let {
@@ -179,19 +180,49 @@
   let syncError = $state<string | null>(null);
   let copyFeedback = $state<boolean>(false);
 
+  async function loadPersistedSettings() {
+    try {
+      const settings = await api.getAppSettings();
+      if (settings["bypass_vpn"] !== undefined) {
+        vpnBypassEnabled = settings["bypass_vpn"] === "true";
+      }
+      if (settings["rnnoise_enabled"] !== undefined) {
+        rnnoiseEnabled = settings["rnnoise_enabled"] === "true";
+      }
+      if (settings["vad_threshold"] !== undefined) {
+        const parsed = parseFloat(settings["vad_threshold"]);
+        if (!isNaN(parsed)) vadThreshold = parsed;
+      }
+      if (settings["input_device"]) {
+        selectedInput = settings["input_device"];
+      }
+      if (settings["output_device"]) {
+        selectedOutput = settings["output_device"];
+      }
+    } catch (e) {
+      console.error("Failed to load persisted settings:", e);
+    }
+  }
+
   $effect(() => {
     loadProfile();
 
-    // Fetch available audio devices
-    api.listAudioDevices().then((res) => {
-      inputDevices = res.input_devices || [];
-      outputDevices = res.output_devices || [];
+    loadPersistedSettings().finally(() => {
+      // Fetch available audio devices
+      api.listAudioDevices().then((res) => {
+        inputDevices = res.input_devices || [];
+        outputDevices = res.output_devices || [];
 
-      const defIn = inputDevices.find((d) => d.is_default);
-      if (defIn) selectedInput = defIn.name;
+        if (selectedInput === "default" || !inputDevices.some((d) => d.name === selectedInput)) {
+          const defIn = inputDevices.find((d) => d.is_default);
+          if (defIn) selectedInput = defIn.name;
+        }
 
-      const defOut = outputDevices.find((d) => d.is_default);
-      if (defOut) selectedOutput = defOut.name;
+        if (selectedOutput === "default" || !outputDevices.some((d) => d.name === selectedOutput)) {
+          const defOut = outputDevices.find((d) => d.is_default);
+          if (defOut) selectedOutput = defOut.name;
+        }
+      });
     });
 
     let unlistenLocalLevel: (() => void) | undefined;
@@ -424,6 +455,7 @@
     vadThreshold = threshold;
     try {
       await api.setVadThreshold(threshold);
+      await api.setAppSetting("vad_threshold", threshold.toString());
     } catch (err) {
       console.error("Failed to set VAD threshold:", err);
     }
@@ -432,11 +464,13 @@
   async function handleInputDeviceChange(name: string) {
     selectedInput = name;
     await api.setInputDevice(name);
+    await api.setAppSetting("input_device", name);
   }
 
   async function handleOutputDeviceChange(name: string) {
     selectedOutput = name;
     await api.setOutputDevice(name);
+    await api.setAppSetting("output_device", name);
   }
 
   async function handleMicGainChange(gain: number) {
@@ -452,11 +486,13 @@
   async function handleToggleRnnoise() {
     rnnoiseEnabled = !rnnoiseEnabled;
     await api.setRNNoise(rnnoiseEnabled);
+    await api.setAppSetting("rnnoise_enabled", rnnoiseEnabled ? "true" : "false");
   }
 
   async function handleToggleVpnBypass() {
     vpnBypassEnabled = !vpnBypassEnabled;
     await api.setBypassVpn(vpnBypassEnabled);
+    await api.setAppSetting("bypass_vpn", vpnBypassEnabled ? "true" : "false");
   }
 
   async function handleGenerateSyncTicket() {
@@ -512,7 +548,7 @@
           class:active={activeTab === "account"}
           onclick={() => (activeTab = "account")}
         >
-          👤 Аккаунт
+          👤 My Account
         </button>
         <button
           class="tab-btn"
@@ -550,9 +586,9 @@
     <div class="dialog-body">
       {#if activeTab === "account"}
         <div class="settings-group">
-          <h4>👤 Мой аккаунт (My Account)</h4>
+          <h4>👤 My Account</h4>
           <p class="section-desc">
-            Настройте ваш P2P профиль. Изменения аватара и имени мгновенно синхронизируются с контактами и участниками комнат.
+            Customize your P2P profile. Avatar and nickname updates sync immediately with contacts and room participants.
           </p>
 
           {#if profileError}
@@ -569,21 +605,20 @@
               role="button"
               tabindex="0"
               onkeydown={(e) => e.key === "Enter" && handleAvatarClick()}
-              title="Нажмите, чтобы изменить аватар"
+              title="Click to change avatar"
             >
               <div class="avatar-large-preview">
-                {#if avatarDataUrl}
-                  <img src={avatarDataUrl} alt="Аватар" class="avatar-img-large" />
-                {:else}
-                  <div class="avatar-placeholder-large">
-                    {profile?.nickname ? profile.nickname.slice(0, 1).toUpperCase() : "U"}
-                  </div>
-                {/if}
+                <Avatar
+                  src={avatarDataUrl}
+                  hash={profile?.avatar_hash}
+                  nickname={profile?.nickname}
+                  size={96}
+                />
               </div>
               <!-- Hover Overlay (Change Avatar) -->
               <div class="avatar-hover-overlay">
                 <span class="overlay-icon">📷</span>
-                <span class="overlay-text">Сменить аватар</span>
+                <span class="overlay-text">Change Avatar</span>
               </div>
             </div>
 
@@ -597,17 +632,17 @@
             />
 
             <div class="avatar-actions-info">
-              <div class="avatar-title">{profile?.nickname || "Пользователь"}</div>
+              <div class="avatar-title">{profile?.nickname || "User"}</div>
               <div class="avatar-hint">
-                Поддерживаются PNG, JPG, WEBP или GIF. Кликните для интерактивной обрезки (Steam/Discord стиль).
+                Supports PNG, JPG, WEBP, or GIF. Click to crop (Steam/Discord style).
               </div>
               <div class="avatar-btn-row">
                 <button class="btn-secondary-action" onclick={handleAvatarClick}>
-                  📷 Загрузить фото
+                  📷 Upload Photo
                 </button>
                 {#if avatarDataUrl || profile?.avatar_hash}
                   <button class="btn-danger-action" onclick={handleRemoveAvatar}>
-                    🗑️ Удалить аватар
+                    🗑️ Remove Avatar
                   </button>
                 {/if}
               </div>
@@ -616,13 +651,13 @@
 
           <!-- Nickname Editing -->
           <div class="setting-item">
-            <label for="profile-nickname-input">Имя пользователя (Никнейм)</label>
+            <label for="profile-nickname-input">Nickname (Display Name)</label>
             <div class="nickname-input-row">
               <input
                 id="profile-nickname-input"
                 type="text"
                 bind:value={nicknameInput}
-                placeholder="Введите никнейм..."
+                placeholder="Enter nickname..."
                 maxlength="32"
                 class="account-text-input"
                 onkeydown={(e) => e.key === "Enter" && handleSaveNickname()}
@@ -633,37 +668,37 @@
                 disabled={isSavingProfile || !nicknameInput.trim() || nicknameInput.trim() === profile?.nickname}
               >
                 {#if isSavingProfile}
-                  Сохранение...
+                  Saving...
                 {:else if profileSaveSuccess}
-                  ✓ Сохранено!
+                  ✓ Saved!
                 {:else}
-                  Сохранить
+                  Save Changes
                 {/if}
               </button>
             </div>
             <span class="item-desc">
-              Ваш публичный псевдоним, отображаемый в звонках и сообщениях.
+              Your public display name visible in calls and messages.
             </span>
           </div>
 
           <!-- Account ID (NodeId) -->
           <div class="setting-item">
-            <label for="profile-node-id-val">Уникальный P2P адрес (Node ID)</label>
+            <label for="profile-node-id-val">Unique P2P Address (Node ID)</label>
             <div class="node-id-badge-card">
               <div class="node-id-key-icon">🔑</div>
               <div class="node-id-text-wrap">
-                <code class="node-id-code" id="profile-node-id-val">{profile?.node_id || "Загрузка ID..."}</code>
-                <span class="node-id-caption">Используется для прямого подключения (1-на-1 звонки и Briar DM) без серверов</span>
+                <code class="node-id-code" id="profile-node-id-val">{profile?.node_id || "Loading ID..."}</code>
+                <span class="node-id-caption">Used for direct serverless connections (1-on-1 calls and Briar DM).</span>
               </div>
               <button
                 class="btn-copy-id"
                 onclick={handleCopyNodeId}
-                title="Копировать NodeId в буфер обмена"
+                title="Copy Node ID to clipboard"
               >
                 {#if copyNodeIdFeedback}
-                  ✓ Скопировано!
+                  ✓ Copied!
                 {:else}
-                  📋 Копировать ID
+                  📋 Copy ID
                 {/if}
               </button>
             </div>
@@ -771,9 +806,9 @@
               onclick={handleToggleMicTest}
             >
               {#if isTestingMic}
-                <span class="pulse-dot"></span> Stop Testing / Остановить
+                <span class="pulse-dot"></span> Stop Testing
               {:else}
-                🎤 Let's Check / Проверить микрофон
+                🎤 Test Microphone
               {/if}
             </button>
           </div>
@@ -1148,20 +1183,6 @@
     align-items: center;
     justify-content: center;
     background: var(--bg-tertiary);
-  }
-
-  .avatar-img-large {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-
-  .avatar-placeholder-large {
-    font-size: 2.4rem;
-    font-weight: 700;
-    color: var(--text-primary);
-    user-select: none;
   }
 
   .avatar-hover-overlay {

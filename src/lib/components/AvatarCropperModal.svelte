@@ -42,7 +42,7 @@
       draw();
     };
     image.onerror = () => {
-      errorMessage = "Не удалось загрузить выбранное изображение";
+      errorMessage = "Failed to load the selected image";
     };
     image.src = imageSrc;
 
@@ -247,8 +247,8 @@
 <div class="cropper-backdrop" role="dialog" aria-modal="true" aria-labelledby="cropper-title">
   <div class="cropper-card">
     <div class="cropper-header">
-      <h3 id="cropper-title">✂️ Редактирование аватара</h3>
-      <button class="close-btn" onclick={onCancel} aria-label="Закрыть">✕</button>
+      <h3 id="cropper-title">✂️ Edit Avatar</h3>
+      <button class="close-btn" onclick={onCancel} aria-label="Close">✕</button>
     </div>
 
     {#if errorMessage}
@@ -270,7 +270,7 @@
         onpointercancel={handlePointerUp}
       ></canvas>
       <div class="canvas-hint">
-        Перетаскивайте для смещения • Колесо мыши для масштаба
+        Drag to pan • Mouse wheel to zoom
       </div>
     </div>
 
@@ -285,10 +285,10 @@
         value={zoom}
         oninput={handleZoomInput}
         class="zoom-slider"
-        aria-label="Масштаб"
+        aria-label="Zoom"
       />
       <span class="zoom-val">{zoom.toFixed(2)}x</span>
-      <button class="reset-btn" onclick={handleReset} title="Сбросить масштаб и положение">
+      <button class="reset-btn" onclick={handleReset} title="Reset zoom and position">
         ↺
       </button>
     </div>
@@ -296,13 +296,13 @@
     <!-- Actions -->
     <div class="cropper-actions">
       <button class="btn-cancel" onclick={onCancel} disabled={isApplying}>
-        Отмена
+        Cancel
       </button>
       <button class="btn-apply" onclick={handleApply} disabled={isApplying}>
         {#if isApplying}
-          Сохранение...
+          Saving...
         {:else}
-          Применить
+          Apply
         {/if}
       </button>
     </div>

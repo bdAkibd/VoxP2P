@@ -48,6 +48,8 @@ use ipc::commands::{
     update_profile,
     update_profile_avatar,
     get_avatar,
+    get_app_settings,
+    set_app_setting,
 };
 
 use network::device_sync::DeviceSyncManager;
@@ -167,6 +169,36 @@ pub fn run() {
                 }
             });
 
+            // Load saved settings and apply bypass_vpn to NodeManager, and rnnoise/devices/vad to AudioManager
+            if let Ok(settings) = db.get_all_settings() {
+                if let Some(val) = settings.get("bypass_vpn") {
+                    let bypass = val == "true";
+                    let nm = node_manager.clone();
+                    tauri::async_runtime::spawn(async move {
+                        nm.set_bypass_vpn(bypass).await;
+                    });
+                }
+                if let Some(val) = settings.get("rnnoise_enabled") {
+                    let enabled = val == "true";
+                    audio_manager.set_rnnoise(enabled);
+                }
+                if let Some(val) = settings.get("vad_threshold") {
+                    if let Ok(thresh) = val.parse::<f32>() {
+                        audio_manager.set_vad_threshold(thresh);
+                    }
+                }
+                if let Some(val) = settings.get("input_device") {
+                    if !val.is_empty() && val != "default" {
+                        let _ = audio_manager.set_input_device(Some(val.as_str()));
+                    }
+                }
+                if let Some(val) = settings.get("output_device") {
+                    if !val.is_empty() && val != "default" {
+                        let _ = audio_manager.set_output_device(Some(val.as_str()));
+                    }
+                }
+            }
+
             // Start offline queue watcher to automatically flush pending DMs when contacts connect
             ft_manager.start_offline_queue_watcher();
 
@@ -229,7 +261,9 @@ pub fn run() {
             start_device_sync_host,
             import_from_sync_qr,
             update_profile_avatar,
-            get_avatar
+            get_avatar,
+            get_app_settings,
+            set_app_setting
         ])
 
         .run(tauri::generate_context!())

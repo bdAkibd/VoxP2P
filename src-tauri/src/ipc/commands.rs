@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
 use crate::audio::{AudioDeviceInfo, AudioDevicesResponse, AudioManager};
@@ -486,6 +487,57 @@ pub async fn set_bypass_vpn(
     node_manager: State<'_, NodeManager>,
 ) -> Result<(), String> {
     node_manager.set_bypass_vpn(bypass).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_app_settings(db: State<'_, Database>) -> Result<HashMap<String, String>, String> {
+    db.get_all_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_app_setting(
+    key: String,
+    value: String,
+    db: State<'_, Database>,
+    node_manager: State<'_, NodeManager>,
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    db.set_setting(&key, &value).map_err(|e| e.to_string())?;
+
+    match key.as_str() {
+        "bypass_vpn" => {
+            let bypass = value == "true";
+            node_manager.set_bypass_vpn(bypass).await;
+        }
+        "rnnoise_enabled" => {
+            let enabled = value == "true";
+            audio_manager.set_rnnoise(enabled);
+        }
+        "vad_threshold" => {
+            if let Ok(thresh) = value.parse::<f32>() {
+                audio_manager.set_vad_threshold(thresh);
+            }
+        }
+        "input_device" => {
+            let dev = if value.is_empty() || value == "default" {
+                None
+            } else {
+                Some(value.as_str())
+            };
+            let _ = audio_manager.set_input_device(dev);
+        }
+        "output_device" => {
+            let dev = if value.is_empty() || value == "default" {
+                None
+            } else {
+                Some(value.as_str())
+            };
+            let _ = audio_manager.set_output_device(dev);
+        }
+        _ => {}
+    }
+
     Ok(())
 }
 

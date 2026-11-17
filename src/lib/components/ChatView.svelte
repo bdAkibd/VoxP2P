@@ -1,12 +1,14 @@
 <script lang="ts">
   import { getCurrentWebview } from "@tauri-apps/api/webview";
-  import type { Message, UserProfile, TransferProgressPayload } from "../types";
+  import type { Message, UserProfile, TransferProgressPayload, Contact } from "../types";
   import { api } from "../api";
   import { detectThemeInText, applyTheme, type ThemeConfig } from "../theme";
+  import Avatar from "./Avatar.svelte";
 
   let {
     activeChatId,
     profile,
+    contacts = [],
     messages,
     onSendMessage,
     onThemeApplied,
@@ -15,6 +17,7 @@
   }: {
     activeChatId: string;
     profile: UserProfile | null;
+    contacts?: Contact[];
     messages: Message[];
     onSendMessage: (text: string) => void;
     onThemeApplied: (theme: ThemeConfig) => void;
@@ -254,11 +257,17 @@
       {#each messages as msg}
         {@const detectedTheme = detectThemeInText(msg.content)}
         {@const callTicket = extractTicket(msg.content)}
-        <div class="message-card" class:my-message={msg.sender_id === profile?.node_id}>
-          <div class="message-avatar">
-            {msg.sender_id === profile?.node_id
-              ? profile?.nickname?.slice(0, 1).toUpperCase() || "Y"
-              : msg.sender_id.slice(0, 1).toUpperCase()}
+        {@const senderContact = contacts.find((c) => c.node_id === msg.sender_id)}
+        {@const isMe = msg.sender_id === profile?.node_id}
+        {@const authorAvatarHash = isMe ? profile?.avatar_hash : senderContact?.avatar_path}
+        {@const authorNickname = isMe ? (profile?.nickname || "You") : (senderContact?.nickname || msg.sender_id.slice(0, 4))}
+        <div class="message-card" class:my-message={isMe}>
+          <div class="message-avatar-wrap">
+            <Avatar
+              hash={authorAvatarHash}
+              nickname={authorNickname}
+              size={36}
+            />
           </div>
 
           <div class="message-body">
@@ -524,23 +533,8 @@
     align-items: flex-start;
   }
 
-  .message-avatar {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 0.85rem;
+  .message-avatar-wrap {
     flex-shrink: 0;
-  }
-
-  .message-card.my-message .message-avatar {
-    background: var(--accent-primary);
-    color: #ffffff;
   }
 
   .message-body {

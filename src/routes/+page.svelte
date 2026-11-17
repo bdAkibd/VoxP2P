@@ -7,6 +7,7 @@
   import CallView from "$lib/components/CallView.svelte";
   import ChatView from "$lib/components/ChatView.svelte";
   import SettingsModal from "$lib/components/SettingsModal.svelte";
+  import Avatar from "$lib/components/Avatar.svelte";
 
   let currentTheme = $state<ThemeConfig>(initTheme());
   let profile = $state<UserProfile | null>(null);
@@ -194,7 +195,9 @@
       messages[idx] = msg;
       messages = [...messages];
     } else if (msg.chat_id === activeChatId || msg.sender_id === activeChatId) {
-      messages = [...messages, msg];
+      if (!messages.some((m) => m.id === msg.id)) {
+        messages = [...messages, msg];
+      }
     }
   }
 
@@ -275,7 +278,9 @@
   async function handleSendMessage(content: string) {
     try {
       const sent = await api.sendMessage(activeChatId, content);
-      messages = [...messages, sent];
+      if (!messages.some((m) => m.id === sent.id)) {
+        messages = [...messages, sent];
+      }
     } catch (err) {
       console.error("Failed to send message:", err);
     }
@@ -351,6 +356,7 @@
       <ChatView
         {activeChatId}
         {profile}
+        {contacts}
         {messages}
         onSendMessage={handleSendMessage}
         onThemeApplied={handleThemeApplied}
@@ -365,13 +371,19 @@
       {#if mobileTab === "chats"}
         <div class="mobile-tab-content">
           <div class="mobile-header-bar">
-            <div class="mobile-header-title-box">
-              <span class="mobile-chat-title">{getContactName(activeChatId)}</span>
-              {#if activeChatId !== "lobby"}
-                <span class="mobile-chat-sub">
-                  {activeChatId.startsWith("room_") ? "Mesh Room" : "Direct Message"}
-                </span>
+            <div class="mobile-header-left">
+              {#if activeChatId !== "lobby" && !activeChatId.startsWith("room_")}
+                {@const currentContact = contacts.find((c) => c.node_id === activeChatId)}
+                <Avatar hash={currentContact?.avatar_path} nickname={currentContact?.nickname || activeChatId} size={32} />
               {/if}
+              <div class="mobile-header-title-box">
+                <span class="mobile-chat-title">{getContactName(activeChatId)}</span>
+                {#if activeChatId !== "lobby"}
+                  <span class="mobile-chat-sub">
+                    {activeChatId.startsWith("room_") ? "Mesh Room" : "Direct Message"}
+                  </span>
+                {/if}
+              </div>
             </div>
             <div class="mobile-header-actions">
               {#if activeChatId !== "lobby" && !activeChatId.startsWith("room_")}
@@ -419,6 +431,7 @@
             <ChatView
               {activeChatId}
               {profile}
+              {contacts}
               {messages}
               onSendMessage={handleSendMessage}
               onThemeApplied={handleThemeApplied}
@@ -545,8 +558,13 @@
                 <span class="account-badge">My Account</span>
                 <span class="online-tag">● Connected</span>
               </div>
-              <div class="account-nickname">{profile?.nickname || "VoxP2P Peer"}</div>
-              <div class="account-node-id">{profile?.node_id || ""}</div>
+              <div class="account-summary-profile">
+                <Avatar hash={profile?.avatar_hash} nickname={profile?.nickname} size={48} />
+                <div class="account-summary-info">
+                  <div class="account-nickname">{profile?.nickname || "VoxP2P Peer"}</div>
+                  <div class="account-node-id">{profile?.node_id || ""}</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -626,10 +644,15 @@
   {/if}
   <!-- Incoming 1-on-1 Call Overlay Modal -->
   {#if incomingCall}
+    {@const callerContact = contacts.find((c) => c.node_id === incomingCall?.caller_id)}
     <div class="incoming-call-overlay" role="dialog" aria-modal="true" tabindex="-1">
       <div class="incoming-call-card">
         <div class="call-pulse-animation">
-          <div class="call-avatar-icon">📞</div>
+          <Avatar
+            hash={callerContact?.avatar_path}
+            nickname={callerContact?.nickname || incomingCall?.caller_id || "Peer"}
+            size={68}
+          />
         </div>
         <h3 class="incoming-title">Incoming 1-on-1 Call</h3>
         <p class="caller-name">From: <strong>{getContactName(incomingCall.caller_id)}</strong></p>
@@ -842,6 +865,13 @@
     flex-shrink: 0;
     min-height: 54px;
     box-sizing: border-box;
+  }
+
+  .mobile-header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    overflow: hidden;
   }
 
   .mobile-header-title-box {
@@ -1160,7 +1190,22 @@
     padding: 14px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
+  }
+
+  .account-summary-profile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 2px;
+  }
+
+  .account-summary-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .account-summary-top {
@@ -1253,10 +1298,6 @@
     100% {
       box-shadow: 0 0 0 0 rgba(79, 70, 229, 0);
     }
-  }
-
-  .call-avatar-icon {
-    font-size: 2.2rem;
   }
 
   .incoming-title {

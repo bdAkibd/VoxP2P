@@ -1001,10 +1001,6 @@ impl RoomSession {
 
         let _ = self.broadcast_gossip(gossip_msg).await;
 
-        if let Some(ref cb) = self.chat_message_cb {
-            cb(&msg);
-        }
-
         Ok(msg)
     }
 

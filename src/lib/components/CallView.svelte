@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RoomState, PeerInfo, UserProfile } from "../types";
   import { api } from "../api";
+  import Avatar from "./Avatar.svelte";
 
   let {
     roomState,
@@ -120,12 +121,12 @@
           }}
         >
           <div class="avatar-ring-container">
-            <div
-              class="peer-avatar"
-              class:is-speaking={isSpeaking(peer.node_id)}
-            >
-              {peer.nickname ? peer.nickname.slice(0, 1).toUpperCase() : "P"}
-            </div>
+            <Avatar
+              hash={peer.avatar_hash}
+              nickname={peer.nickname}
+              size={64}
+              isSpeaking={isSpeaking(peer.node_id)}
+            />
             {#if peer.is_host}
               <div class="host-crown-badge" title="Room Host">👑</div>
             {/if}
@@ -360,30 +361,11 @@
 
   .avatar-ring-container {
     position: relative;
-    width: 60px;
-    height: 60px;
+    width: 64px;
+    height: 64px;
     display: flex;
     align-items: center;
     justify-content: center;
-  }
-
-  .peer-avatar {
-    width: 54px;
-    height: 54px;
-    border-radius: 50%;
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.3rem;
-    font-weight: 700;
-    transition: all 0.15s ease;
-  }
-
-  .peer-avatar.is-speaking {
-    outline: 3px solid var(--voice-speaking-ring);
-    outline-offset: 3px;
   }
 
   .host-crown-badge {
