@@ -8,6 +8,7 @@
     persistTheme,
     loadSavedThemes,
   } from "../theme";
+  import { t } from "../i18n";
 
   let { currentTheme = $bindable(), onClose }: { currentTheme: ThemeConfig; onClose: () => void } = $props();
 
@@ -60,7 +61,7 @@
     importError = null;
     const parsed = importThemeFromJson(importJsonText);
     if (!parsed) {
-      importError = "Invalid VoxP2P theme JSON structure.";
+      importError = t("settings.invalidThemeJson");
       return;
     }
     activeTheme = parsed;
@@ -72,14 +73,14 @@
 
 <div class="studio-container">
   <div class="studio-header">
-    <h3>Theme Studio & Palette Engine</h3>
+    <h3>{t("settings.themeTitle")}</h3>
     <button class="close-btn" onclick={onClose}>&times;</button>
   </div>
 
   <div class="studio-content">
     <!-- Presets bar -->
     <div class="section">
-      <span class="section-label">Presets</span>
+      <span class="section-label">{t("settings.presets")}</span>
       <div class="presets-row">
         {#each Object.keys(savedThemes) as presetName}
           <button
@@ -95,7 +96,7 @@
 
     <!-- Live Preview Card -->
     <div class="section">
-      <span class="section-label">Live Preview</span>
+      <span class="section-label">{t("settings.livePreview")}</span>
       <div class="preview-box">
         <div class="preview-card">
           <div class="preview-header">
@@ -109,7 +110,7 @@
             </div>
           </div>
           <p class="preview-text">
-            Hello! This is how your theme looks in real-time across VoxP2P.
+            {t("settings.previewGreeting")}
           </p>
           <div class="preview-actions">
             <button class="btn-accent">Accent Button</button>
@@ -121,10 +122,10 @@
 
     <!-- Color Controls Grid -->
     <div class="section">
-      <span class="section-label">Color Palettes</span>
+      <span class="section-label">{t("settings.colorPalettes")}</span>
       <div class="controls-grid">
         <label class="control-item">
-          <span>Background Primary</span>
+          <span>{t("settings.bgPrimary")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -136,7 +137,7 @@
         </label>
 
         <label class="control-item">
-          <span>Background Secondary</span>
+          <span>{t("settings.bgSecondary")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -148,7 +149,7 @@
         </label>
 
         <label class="control-item">
-          <span>Background Tertiary</span>
+          <span>{t("settings.bgTertiary")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -160,7 +161,7 @@
         </label>
 
         <label class="control-item">
-          <span>Surface Card</span>
+          <span>{t("settings.surfaceCard")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -172,7 +173,7 @@
         </label>
 
         <label class="control-item">
-          <span>Border Color</span>
+          <span>{t("settings.borderColor")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -184,7 +185,7 @@
         </label>
 
         <label class="control-item">
-          <span>Primary Text</span>
+          <span>{t("settings.textPrimary")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -196,7 +197,7 @@
         </label>
 
         <label class="control-item">
-          <span>Muted Text</span>
+          <span>{t("settings.textMuted")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -208,7 +209,7 @@
         </label>
 
         <label class="control-item">
-          <span>Accent Primary</span>
+          <span>{t("settings.accentPrimary")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -220,7 +221,7 @@
         </label>
 
         <label class="control-item">
-          <span>Accent Hover</span>
+          <span>{t("settings.accentHover")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -232,7 +233,7 @@
         </label>
 
         <label class="control-item">
-          <span>Voice Speaking Ring</span>
+          <span>{t("settings.voiceSpeakingRing")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -244,7 +245,7 @@
         </label>
 
         <label class="control-item">
-          <span>Danger Color</span>
+          <span>{t("settings.dangerColor")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -256,7 +257,7 @@
         </label>
 
         <label class="control-item">
-          <span>Online Status Color</span>
+          <span>{t("settings.onlineStatusColor")}</span>
           <div class="color-picker-wrap">
             <input
               type="color"
@@ -275,7 +276,7 @@
       <div class="sliders-row">
         <label class="slider-item">
           <div class="slider-header">
-            <span>Border Width</span>
+            <span>{t("settings.borderWidth")}</span>
             <span>{activeTheme.borderWidth}px</span>
           </div>
           <input
@@ -290,7 +291,7 @@
 
         <label class="slider-item">
           <div class="slider-header">
-            <span>Border Radius</span>
+            <span>{t("settings.borderRadius")}</span>
             <span>{activeTheme.borderRadius}px</span>
           </div>
           <input
@@ -317,7 +318,7 @@
           bind:value={activeTheme.name}
         />
         <button class="btn-save" onclick={handleSaveTheme}>
-          {saveFeedback ? "Saved to themes.json! ✓" : "Save Custom Theme"}
+          {saveFeedback ? "✓ " + t("settings.savedNotice") : t("settings.saveTheme")}
         </button>
       </div>
     </div>
@@ -327,7 +328,7 @@
       <label class="section-label" for="theme-import-textarea-id">Export / Import Theme String</label>
       <div class="import-export-row">
         <button class="btn-secondary" onclick={handleExport}>
-          {copyFeedback ? "Copied JSON to Clipboard! ✓" : "Export Theme JSON"}
+          {copyFeedback ? "✓ " + t("common.copied") : t("settings.exportTheme")}
         </button>
       </div>
 
@@ -335,13 +336,13 @@
         <textarea
           id="theme-import-textarea-id"
           class="import-textarea"
-          placeholder="Paste Theme JSON string here to import..."
+          placeholder={t("settings.importPlaceholder")}
           bind:value={importJsonText}
         ></textarea>
         {#if importError}
           <div class="error-msg">{importError}</div>
         {/if}
-        <button class="btn-accent" onclick={handleImport}>Import Theme</button>
+        <button class="btn-accent" onclick={handleImport}>{t("settings.applyImport")}</button>
       </div>
     </div>
   </div>

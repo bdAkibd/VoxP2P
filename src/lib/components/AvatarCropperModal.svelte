@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { t } from "../i18n";
 
   let {
     imageSrc,
@@ -247,8 +248,8 @@
 <div class="cropper-backdrop" role="dialog" aria-modal="true" aria-labelledby="cropper-title">
   <div class="cropper-card">
     <div class="cropper-header">
-      <h3 id="cropper-title">✂️ Edit Avatar</h3>
-      <button class="close-btn" onclick={onCancel} aria-label="Close">✕</button>
+      <h3 id="cropper-title">{t("notifications.cropperTitle")}</h3>
+      <button class="close-btn" onclick={onCancel} aria-label={t("common.close")}>✕</button>
     </div>
 
     {#if errorMessage}
@@ -270,7 +271,7 @@
         onpointercancel={handlePointerUp}
       ></canvas>
       <div class="canvas-hint">
-        Drag to pan • Mouse wheel to zoom
+        {t("notifications.cropperHint")}
       </div>
     </div>
 
@@ -285,10 +286,10 @@
         value={zoom}
         oninput={handleZoomInput}
         class="zoom-slider"
-        aria-label="Zoom"
+        aria-label={t("notifications.cropperZoom")}
       />
       <span class="zoom-val">{zoom.toFixed(2)}x</span>
-      <button class="reset-btn" onclick={handleReset} title="Reset zoom and position">
+      <button class="reset-btn" onclick={handleReset} title={t("notifications.cropperReset")}>
         ↺
       </button>
     </div>
@@ -296,13 +297,13 @@
     <!-- Actions -->
     <div class="cropper-actions">
       <button class="btn-cancel" onclick={onCancel} disabled={isApplying}>
-        Cancel
+        {t("common.cancel")}
       </button>
       <button class="btn-apply" onclick={handleApply} disabled={isApplying}>
         {#if isApplying}
-          Saving...
+          {t("notifications.cropperSaving")}
         {:else}
-          Apply
+          {t("notifications.cropperApply")}
         {/if}
       </button>
     </div>

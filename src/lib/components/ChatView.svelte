@@ -2,6 +2,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import type { Message, UserProfile, TransferProgressPayload, Contact, ContextMenuItem } from "../types";
   import { api } from "../api";
+  import { t } from "../i18n";
   import { detectThemeInText, applyTheme, type ThemeConfig } from "../theme";
   import Avatar from "./Avatar.svelte";
   import ContextMenu from "./ContextMenu.svelte";
@@ -183,7 +184,7 @@
     // 1. Copy Text (if message has content)
     if (msg.content) {
       items.push({
-        label: "Copy Text",
+        label: t("chat.copyText"),
         icon: "📋",
         action: async () => {
           try {
@@ -197,7 +198,7 @@
 
     // 2. Forward to Contact...
     items.push({
-      label: "Forward to Contact...",
+      label: t("chat.forwardToContact"),
       icon: "↗️",
       action: () => {
         forwardingMessage = msg;
@@ -208,7 +209,7 @@
     // 3. Edit Message (visible only if sender is me and not a file attachment)
     if (isMe && !msg.attachment_hash) {
       items.push({
-        label: "Edit Message",
+        label: t("chat.editMessage"),
         icon: "✏️",
         action: () => {
           editingMessageId = msg.id;
@@ -226,7 +227,7 @@
     // 4. Delete Message
     if (!isMe) {
       items.push({
-        label: "Delete Message",
+        label: t("chat.deleteMessage"),
         icon: "🗑️",
         danger: true,
         action: async () => {
@@ -239,7 +240,7 @@
       });
     } else {
       items.push({
-        label: "Delete for me",
+        label: t("chat.deleteForMe"),
         icon: "🗑️",
         danger: true,
         action: async () => {
@@ -251,7 +252,7 @@
         },
       });
       items.push({
-        label: "Delete for everyone",
+        label: t("chat.deleteForEveryone"),
         icon: "💥",
         danger: true,
         action: async () => {
@@ -281,7 +282,7 @@
 
     const items: ContextMenuItem[] = [
       {
-        label: "Cut",
+        label: t("chat.cut"),
         icon: "✂️",
         disabled: !hasSelection,
         action: async () => {
@@ -300,7 +301,7 @@
         },
       },
       {
-        label: "Copy",
+        label: t("common.copy"),
         icon: "📋",
         disabled: !hasSelection,
         action: async () => {
@@ -314,7 +315,7 @@
         },
       },
       {
-        label: "Paste",
+        label: t("chat.paste"),
         icon: "📥",
         action: async () => {
           try {
@@ -366,7 +367,7 @@
         forwardingMessage.attachment_hash,
         forwardingMessage.attachment_name
       );
-      forwardFeedback = `✓ Forwarded to ${contact.nickname}!`;
+      forwardFeedback = t("chat.forwardSuccess", { name: contact.nickname });
       setTimeout(() => {
         forwardingMessage = null;
         forwardFeedback = null;
@@ -485,8 +486,8 @@
     <div class="drag-overlay">
       <div class="drag-box">
         <span class="drag-icon">📁</span>
-        <span class="drag-title">Drop files to send via P2P</span>
-        <span class="drag-desc">Instant zero-server transfer via iroh-blobs</span>
+        <span class="drag-title">{t("chat.dropFilesTitle")}</span>
+        <span class="drag-desc">{t("chat.dropFilesDesc")}</span>
       </div>
     </div>
   {/if}
@@ -497,21 +498,21 @@
       <span class="chat-hash-icon">💬</span>
       <span class="chat-title">
         {activeChatId.startsWith("room_") || activeChatId.length < 32
-          ? `Room: ${activeChatId}`
-          : `Direct: ${activeChatId.slice(0, 10)}...${activeChatId.slice(-6)}`}
+          ? t("chat.roomPrefix", { name: activeChatId })
+          : t("chat.directPrefix", { id: `${activeChatId.slice(0, 10)}...${activeChatId.slice(-6)}` })}
       </span>
     </div>
     <div class="chat-header-actions">
       {#if activeChatId !== "lobby" && !activeChatId.startsWith("room_") && !activeChatId.startsWith("call_") && onDirectCall}
         <button
           class="direct-call-action-btn"
-          title="Start 1-on-1 Voice Call"
+          title={t("chat.callActionTitle")}
           onclick={() => onDirectCall?.(activeChatId)}
         >
-          📞 Call
+          {t("chat.callAction")}
         </button>
       {/if}
-      <span class="chat-encryption-badge">P2P Encrypted</span>
+      <span class="chat-encryption-badge">{t("chat.p2pEncrypted")}</span>
     </div>
   </div>
 
@@ -520,7 +521,7 @@
     {#if messages.length === 0}
       <div class="empty-chat">
         <span class="empty-icon">🗨️</span>
-        <p>No messages yet. Send a message, share a theme, or drop a file to transfer via P2P.</p>
+        <p>{t("chat.emptyChatDesc")}</p>
       </div>
     {:else}
       {#each messages as msg}
@@ -529,7 +530,7 @@
         {@const senderContact = contacts.find((c) => c.node_id === msg.sender_id)}
         {@const isMe = msg.sender_id === profile?.node_id}
         {@const authorAvatarHash = isMe ? profile?.avatar_hash : senderContact?.avatar_path}
-        {@const authorNickname = isMe ? (profile?.nickname || "You") : (senderContact?.nickname || msg.sender_id.slice(0, 4))}
+        {@const authorNickname = isMe ? (profile?.nickname || t("common.you")) : (senderContact?.nickname || msg.sender_id.slice(0, 4))}
         <div
           class="message-card"
           class:my-message={isMe}
@@ -552,14 +553,14 @@
             <div class="message-meta">
               <span class="message-sender">
                 {msg.sender_id === profile?.node_id
-                  ? `${profile?.nickname || "You"}`
+                  ? `${profile?.nickname || t("common.you")}`
                   : `${msg.sender_id.slice(0, 8)}...`}
               </span>
               <span class="message-time">
                 {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </span>
               {#if msg.sender_id === profile?.node_id}
-                <span class="message-status" title={msg.delivered ? "Delivered" : "Queued offline"}>
+                <span class="message-status" title={msg.delivered ? t("chat.statusDelivered") : t("chat.statusQueued")}>
                   {msg.delivered ? "✓✓" : "🕒"}
                 </span>
               {/if}
@@ -584,10 +585,10 @@
                 ></textarea>
                 <div class="edit-btn-row">
                   <button class="btn-cancel-edit" onclick={handleCancelEdit}>
-                    Cancel
+                    {t("common.cancel")}
                   </button>
                   <button class="btn-save-edit" onclick={() => handleSaveEdit(msg)}>
-                    Save
+                    {t("common.save")}
                   </button>
                 </div>
               </div>
@@ -596,7 +597,7 @@
                 <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                 {@html renderMarkdown(msg.content)}
                 {#if msg.is_edited}
-                  <span class="edited-badge" title="Edited message">(edited)</span>
+                  <span class="edited-badge" title={t("chat.editedTooltip")}>{t("chat.edited")}</span>
                 {/if}
               </div>
             {/if}
@@ -608,7 +609,7 @@
                   <span style="color: {detectedTheme.textPrimary};">🎨 {detectedTheme.name}</span>
                 </div>
                 <button class="apply-theme-btn" onclick={() => applyThemeFromMessage(detectedTheme!)}>
-                  Apply Theme
+                  {t("chat.applyTheme")}
                 </button>
               </div>
             {/if}
@@ -619,13 +620,13 @@
                 <div class="invite-info">
                   <span class="invite-icon">📞</span>
                   <div class="invite-text-wrap">
-                    <span class="invite-title">Voice Call Invitation</span>
-                    <span class="invite-sub">P2P Encrypted Mesh Room</span>
+                    <span class="invite-title">{t("chat.callInvitation")}</span>
+                    <span class="invite-sub">{t("chat.meshRoomSub")}</span>
                   </div>
                 </div>
                 {#if onJoinRoom}
                   <button class="join-call-btn" onclick={() => onJoinRoom?.(callTicket)}>
-                    Join Call
+                    {t("chat.joinCall")}
                   </button>
                 {/if}
               </div>
@@ -650,7 +651,7 @@
                 <div class="file-card">
                   <div class="file-icon">📄</div>
                   <div class="file-info">
-                    <span class="file-name">{msg.attachment_name || "attachment.bin"}</span>
+                    <span class="file-name">{msg.attachment_name || t("chat.attachmentFallback")}</span>
                     <span class="file-hash">{msg.attachment_hash.slice(0, 16)}...</span>
                   </div>
 
@@ -667,7 +668,7 @@
                       class:downloaded={downloadedHashes[msg.attachment_hash]}
                       onclick={() => handleDownload(msg)}
                     >
-                      {downloadedHashes[msg.attachment_hash] ? "✓ Saved" : "Download"}
+                      {downloadedHashes[msg.attachment_hash] ? t("chat.downloaded") : t("chat.download")}
                     </button>
                   {/if}
                 </div>
@@ -681,19 +682,19 @@
 
   <!-- Input Bar -->
   <div class="chat-input-area">
-    <button class="attach-btn" title="Attach File (iroh-blobs)" onclick={handleAttachButtonClick}>
+    <button class="attach-btn" title={t("chat.attachFileTooltip")} onclick={handleAttachButtonClick}>
       📎
     </button>
     <textarea
       bind:this={textareaEl}
       class="chat-textarea"
-      placeholder={`Message ${activeChatId.startsWith("room_") ? activeChatId : "peer"}...`}
+      placeholder={t("chat.messagePlaceholder")}
       bind:value={messageInput}
       onkeydown={handleKeydown}
       oncontextmenu={handleInputContextMenu}
       rows="1"
     ></textarea>
-    <button class="send-btn" onclick={handleSend} disabled={!messageInput.trim()}>
+    <button class="send-btn" title={t("chat.sendButton")} onclick={handleSend} disabled={!messageInput.trim()}>
       ➤
     </button>
   </div>
@@ -724,12 +725,12 @@
       tabindex="-1"
     >
       <div class="forward-modal-header">
-        <h4>Forward Message</h4>
-        <button class="forward-close-btn" onclick={() => (forwardingMessage = null)} aria-label="Close">&times;</button>
+        <h4>{t("chat.forwardModalTitle")}</h4>
+        <button class="forward-close-btn" onclick={() => (forwardingMessage = null)} aria-label={t("common.close")}>&times;</button>
       </div>
 
       <div class="forward-message-preview">
-        <span class="preview-label">Message:</span>
+        <span class="preview-label">{t("chat.forwardMessageLabel")}</span>
         <p class="preview-text">{forwardingMessage.content || forwardingMessage.attachment_name || "Attachment"}</p>
       </div>
 
@@ -738,9 +739,9 @@
       {/if}
 
       <div class="forward-contacts-list">
-        <span class="contacts-heading">Select Contact:</span>
+        <span class="contacts-heading">{t("chat.forwardSelectContact")}</span>
         {#if contacts.length === 0}
-          <div class="no-contacts-msg">No contacts available to forward to.</div>
+          <div class="no-contacts-msg">{t("chat.noContactsToForward")}</div>
         {:else}
           {#each contacts as contact}
             <button
@@ -753,7 +754,7 @@
                 <span class="contact-name">{contact.nickname}</span>
                 <span class="contact-id">{contact.node_id.slice(0, 12)}...</span>
               </div>
-              <span class="forward-action-label">Send ›</span>
+              <span class="forward-action-label">{t("chat.forwardActionLabel")}</span>
             </button>
           {/each}
         {/if}

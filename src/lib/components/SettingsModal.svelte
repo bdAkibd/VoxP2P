@@ -11,9 +11,11 @@
   } from "../types";
   import type { ThemeConfig } from "../theme";
   import { api } from "../api";
+  import { t, i18n, SUPPORTED_LOCALES, setLocale } from "../i18n";
   import ThemeStudio from "./ThemeStudio.svelte";
   import AvatarCropperModal from "./AvatarCropperModal.svelte";
   import Avatar from "./Avatar.svelte";
+  import UserManual from "./UserManual.svelte";
   import { scan, Format, checkPermissions, requestPermissions } from "@tauri-apps/plugin-barcode-scanner";
 
   let {
@@ -23,12 +25,12 @@
     onSyncCompleted,
   }: {
     currentTheme: ThemeConfig;
-    initialTab?: "account" | "audio" | "network" | "theme" | "sync";
+    initialTab?: "account" | "audio" | "network" | "theme" | "sync" | "language" | "guide";
     onClose: () => void;
     onSyncCompleted?: () => void;
   } = $props();
 
-  let activeTab = $state<"account" | "audio" | "network" | "theme" | "sync">("account");
+  let activeTab = $state<"account" | "audio" | "network" | "theme" | "sync" | "language" | "guide">("account");
 
   $effect(() => {
     if (initialTab) {
@@ -575,35 +577,49 @@
           class:active={activeTab === "account"}
           onclick={() => (activeTab = "account")}
         >
-          👤 My Account
+          {t("settings.tabAccount")}
         </button>
         <button
           class="tab-btn"
           class:active={activeTab === "audio"}
           onclick={() => (activeTab = "audio")}
         >
-          🎙️ Voice & Audio
+          {t("settings.tabAudio")}
         </button>
         <button
           class="tab-btn"
           class:active={activeTab === "network"}
           onclick={() => (activeTab = "network")}
         >
-          🌐 Network & VPN
+          {t("settings.tabNetwork")}
         </button>
         <button
           class="tab-btn"
           class:active={activeTab === "theme"}
           onclick={() => (activeTab = "theme")}
         >
-          🎨 Theme Studio
+          {t("settings.tabTheme")}
         </button>
         <button
           class="tab-btn"
           class:active={activeTab === "sync"}
           onclick={() => (activeTab = "sync")}
         >
-          📱 Device Sync & QR
+          {t("settings.tabSync")}
+        </button>
+        <button
+          class="tab-btn"
+          class:active={activeTab === "language"}
+          onclick={() => (activeTab = "language")}
+        >
+          {t("settings.tabLanguage")}
+        </button>
+        <button
+          class="tab-btn"
+          class:active={activeTab === "guide"}
+          onclick={() => (activeTab = "guide")}
+        >
+          {t("settings.tabGuide")}
         </button>
       </div>
       <button class="dialog-close-btn" onclick={handleModalClose}>&times;</button>
@@ -613,9 +629,9 @@
     <div class="dialog-body">
       {#if activeTab === "account"}
         <div class="settings-group">
-          <h4>👤 My Account</h4>
+          <h4>{t("settings.accountTitle")}</h4>
           <p class="section-desc">
-            Customize your P2P profile. Avatar and nickname updates sync immediately with contacts and room participants.
+            {t("settings.accountDesc")}
           </p>
 
           {#if profileError}
@@ -632,7 +648,7 @@
               role="button"
               tabindex="0"
               onkeydown={(e) => e.key === "Enter" && handleAvatarClick()}
-              title="Click to change avatar"
+              title={t("settings.changeAvatar")}
             >
               <div class="avatar-large-preview">
                 <Avatar
@@ -645,7 +661,7 @@
               <!-- Hover Overlay (Change Avatar) -->
               <div class="avatar-hover-overlay">
                 <span class="overlay-icon">📷</span>
-                <span class="overlay-text">Change Avatar</span>
+                <span class="overlay-text">{t("settings.changeAvatar")}</span>
               </div>
             </div>
 
@@ -659,17 +675,17 @@
             />
 
             <div class="avatar-actions-info">
-              <div class="avatar-title">{profile?.nickname || "User"}</div>
+              <div class="avatar-title">{profile?.nickname || t("common.peer")}</div>
               <div class="avatar-hint">
                 Supports PNG, JPG, WEBP, or GIF. Click to crop (Steam/Discord style).
               </div>
               <div class="avatar-btn-row">
                 <button class="btn-secondary-action" onclick={handleAvatarClick}>
-                  📷 Upload Photo
+                  📷 {t("settings.changeAvatar")}
                 </button>
                 {#if avatarDataUrl || profile?.avatar_hash}
                   <button class="btn-danger-action" onclick={handleRemoveAvatar}>
-                    🗑️ Remove Avatar
+                    🗑️ {t("settings.removeAvatar")}
                   </button>
                 {/if}
               </div>
@@ -678,13 +694,13 @@
 
           <!-- Nickname Editing -->
           <div class="setting-item">
-            <label for="profile-nickname-input">Nickname (Display Name)</label>
+            <label for="profile-nickname-input">{t("settings.nicknameLabel")}</label>
             <div class="nickname-input-row">
               <input
                 id="profile-nickname-input"
                 type="text"
                 bind:value={nicknameInput}
-                placeholder="Enter nickname..."
+                placeholder={t("settings.nicknamePlaceholder")}
                 maxlength="32"
                 class="account-text-input"
                 onkeydown={(e) => e.key === "Enter" && handleSaveNickname()}
@@ -695,37 +711,37 @@
                 disabled={isSavingProfile || !nicknameInput.trim() || nicknameInput.trim() === profile?.nickname}
               >
                 {#if isSavingProfile}
-                  Saving...
+                  {t("common.loading")}
                 {:else if profileSaveSuccess}
-                  ✓ Saved!
+                  ✓ {t("settings.profileSaved")}
                 {:else}
-                  Save Changes
+                  {t("settings.saveProfile")}
                 {/if}
               </button>
             </div>
             <span class="item-desc">
-              Your public display name visible in calls and messages.
+              {t("settings.nicknameLabel")}
             </span>
           </div>
 
           <!-- Account ID -->
           <div class="setting-item">
-            <label for="profile-node-id-val">Your ID</label>
+            <label for="profile-node-id-val">{t("settings.nodeIdLabel")}</label>
             <div class="node-id-badge-card">
               <div class="node-id-key-icon">🔑</div>
               <div class="node-id-text-wrap">
-                <code class="node-id-code" id="profile-node-id-val">{profile?.node_id || "Loading ID..."}</code>
-                <span class="node-id-caption">Used for direct connections (1-on-1 calls and chat).</span>
+                <code class="node-id-code" id="profile-node-id-val">{profile?.node_id || t("common.loading")}</code>
+                <span class="node-id-caption">{t("settings.nodeIdDesc")}</span>
               </div>
               <button
                 class="btn-copy-id"
                 onclick={handleCopyNodeId}
-                title="Copy ID to clipboard"
+                title={t("settings.copyNodeId")}
               >
                 {#if copyNodeIdFeedback}
-                  ✓ Copied!
+                  ✓ {t("common.copied")}
                 {:else}
-                  📋 Copy ID
+                  📋 {t("settings.copyNodeId")}
                 {/if}
               </button>
             </div>
@@ -733,17 +749,17 @@
         </div>
       {:else if activeTab === "audio"}
         <div class="settings-group">
-          <h4>Audio Devices</h4>
+          <h4>{t("settings.audioTitle")}</h4>
 
           <div class="setting-item">
-            <label for="setting-input-dev">Input Device (Microphone)</label>
+            <label for="setting-input-dev">{t("settings.inputDevice")}</label>
             <select
               id="setting-input-dev"
               class="settings-select"
               value={selectedInput}
               onchange={(e) => handleInputDeviceChange((e.target as HTMLSelectElement).value)}
             >
-              <option value="default">Default Input Device</option>
+              <option value="default">{t("settings.inputDevice")}</option>
               {#each inputDevices as dev}
                 <option value={dev.name}>{dev.name} {dev.is_default ? "(Default)" : ""}</option>
               {/each}
@@ -751,14 +767,14 @@
           </div>
 
           <div class="setting-item">
-            <label for="setting-output-dev">Output Device (Playback)</label>
+            <label for="setting-output-dev">{t("settings.outputDevice")}</label>
             <select
               id="setting-output-dev"
               class="settings-select"
               value={selectedOutput}
               onchange={(e) => handleOutputDeviceChange((e.target as HTMLSelectElement).value)}
             >
-              <option value="default">Default Output Device</option>
+              <option value="default">{t("settings.outputDevice")}</option>
               {#each outputDevices as dev}
                 <option value={dev.name}>{dev.name} {dev.is_default ? "(Default)" : ""}</option>
               {/each}
@@ -767,11 +783,11 @@
         </div>
 
         <div class="settings-group">
-          <h4>Volume & Gain Controls</h4>
+          <h4>{t("settings.audioTitle")}</h4>
 
           <div class="setting-item">
             <div class="setting-label-row">
-              <label for="setting-mic-gain">Microphone Input Gain</label>
+              <label for="setting-mic-gain">{t("settings.micGain", { val: Math.round(micGain * 100) })}</label>
               <span class="value-badge">{Math.round(micGain * 100)}%</span>
             </div>
             <input
@@ -787,7 +803,7 @@
 
           <div class="setting-item">
             <div class="setting-label-row">
-              <label for="setting-master-vol">Master Output Volume</label>
+              <label for="setting-master-vol">{t("settings.masterVolume", { val: Math.round(masterVolume * 100) })}</label>
               <span class="value-badge">{Math.round(masterVolume * 100)}%</span>
             </div>
             <input
@@ -803,18 +819,18 @@
         </div>
 
         <div class="settings-group">
-          <h4>Voice Processing</h4>
+          <h4>{t("settings.rnnoiseTitle")}</h4>
 
           <div class="toggle-setting-row">
             <div>
-              <div class="toggle-title">RNNoise Noise Suppression</div>
-              <div class="toggle-desc">Real-time recurrent neural network audio filter (removes fans, clicks, and background noise).</div>
+              <div class="toggle-title">{t("settings.rnnoiseTitle")}</div>
+              <div class="toggle-desc">{t("settings.rnnoiseDesc")}</div>
             </div>
             <button
               class="switch-btn"
               class:checked={rnnoiseEnabled}
               onclick={handleToggleRnnoise}
-              aria-label="Toggle RNNoise Noise Suppression"
+              aria-label={t("settings.rnnoiseTitle")}
             >
               <span class="switch-handle"></span>
             </button>
@@ -824,8 +840,8 @@
         <div class="settings-group">
           <div class="setting-header-with-action">
             <div>
-              <h4>Microphone Test & Input Sensitivity</h4>
-              <div class="toggle-desc">Test your microphone input and listen to your processed voice in real-time.</div>
+              <h4>{t("settings.micTest")}</h4>
+              <div class="toggle-desc">{t("settings.micTestDesc")}</div>
             </div>
             <button
               class="mic-test-btn"
@@ -833,9 +849,9 @@
               onclick={handleToggleMicTest}
             >
               {#if isTestingMic}
-                <span class="pulse-dot"></span> Stop Testing
+                <span class="pulse-dot"></span> {t("settings.stopTest")}
               {:else}
-                🎤 Test Microphone
+                🎤 {t("settings.startTest")}
               {/if}
             </button>
           </div>
@@ -869,7 +885,7 @@
               <div
                 class="vad-marker-notch"
                 style="left: {vadThreshold * 100}%"
-                title="Input Sensitivity Threshold: {Math.round(vadThreshold * 100)}%"
+                title="{t('settings.vadThreshold', { val: Math.round(vadThreshold * 100) })}"
               >
                 <div class="vad-notch-caret"></div>
                 <div class="vad-notch-line"></div>
@@ -878,7 +894,7 @@
 
             <div class="threshold-control-row">
               <div class="threshold-label-wrap">
-                <label for="vad-threshold-slider">Input Sensitivity Threshold (VAD Gate)</label>
+                <label for="vad-threshold-slider">{t("settings.vadThreshold", { val: Math.round(vadThreshold * 100) })}</label>
                 <span class="threshold-val-badge" class:open={localInputLevel.percent >= vadThreshold * 100}>
                   {Math.round(vadThreshold * 100)}% ({localInputLevel.percent >= vadThreshold * 100 ? "VOICE ACTIVE" : "GATE CLOSED"})
                 </span>
@@ -894,7 +910,7 @@
                 class="vad-slider"
               />
               <div class="threshold-hint">
-                Drag the marker so ambient room noise stays below the gate, and speaking lights up the meter.
+                {t("settings.vadDesc")}
               </div>
             </div>
           </div>
@@ -902,20 +918,20 @@
 
       {:else if activeTab === "network"}
         <div class="settings-group">
-          <h4>P2P Connectivity & Routing</h4>
+          <h4>{t("settings.networkTitle")}</h4>
 
           <div class="toggle-setting-row">
             <div>
-              <div class="toggle-title">Physical Adapter Direct Binding (VPN Bypass)</div>
+              <div class="toggle-title">{t("settings.vpnBypassTitle")}</div>
               <div class="toggle-desc">
-                Binds P2P QUIC sockets directly to your physical network interface to prevent TUN/TAP VPN conflicts and ensure direct local hole-punching.
+                {t("settings.vpnBypassDesc")}
               </div>
             </div>
             <button
               class="switch-btn"
               class:checked={vpnBypassEnabled}
               onclick={handleToggleVpnBypass}
-              aria-label="Toggle Physical Adapter VPN Bypass"
+              aria-label={t("settings.vpnBypassTitle")}
             >
               <span class="switch-handle"></span>
             </button>
@@ -923,16 +939,17 @@
         </div>
 
         <div class="settings-group">
-          <h4>Relay & Topology</h4>
+          <h4>{t("settings.p2pStatusTitle")}</h4>
+          <p class="section-desc">{t("settings.p2pStatusDesc")}</p>
           <div class="info-card">
             <div class="info-item">
-              <strong>Topology:</strong> Full-Mesh QUIC Unreliable Datagrams (32kbps Opus)
+              <strong>{t("settings.natType")}</strong>
             </div>
             <div class="info-item">
-              <strong>NAT Fallback:</strong> Automatic Host UDP Packet Relay for Symmetric NAT peers
+              <strong>{t("settings.cryptoEngine")}</strong>
             </div>
             <div class="info-item">
-              <strong>Discovery:</strong> Mainline DHT + Pkarr DNS fallback (100% serverless)
+              <strong>{t("settings.voiceEngine")}</strong>
             </div>
           </div>
         </div>
@@ -942,20 +959,20 @@
       {:else if activeTab === "sync"}
         <!-- QR CODE HOST & CLIENT SYNC -->
         <div class="settings-group">
-          <h4>📱 Link Mobile Device (QR Code Sync)</h4>
+          <h4>{t("settings.syncTitle")}</h4>
           <p class="section-desc">
-            Instantly clone your account identity, contacts, and message history to your Android phone or companion device with end-to-end P2P encryption over ALPN <code>/p2pchat/sync/1</code>.
+            {t("settings.syncDesc")}
           </p>
 
           <div class="sync-grid-container">
             <!-- Left Card: Host QR Generator -->
             <div class="sync-card">
               <div class="sync-card-header">
-                <h5>🖥️ This Device (Host)</h5>
+                <h5>{t("settings.qrHostTitle")}</h5>
                 <span class="sync-role-badge">Export Identity</span>
               </div>
               <p class="card-desc">
-                Generate a temporary, one-time authenticated QR code to clone this account onto your mobile phone.
+                {t("settings.qrHostDesc")}
               </p>
 
               {#if !qrHostPayload}
@@ -964,7 +981,7 @@
                   onclick={handleStartQrHost}
                   disabled={qrHostLoading}
                 >
-                  {qrHostLoading ? "Starting P2P Sync Host..." : "⚡ Generate Sync QR Code"}
+                  {qrHostLoading ? t("common.loading") : "⚡ " + t("settings.generateQr")}
                 </button>
               {:else}
                 <div class="qr-presentation">
@@ -975,7 +992,7 @@
                   {#if qrCountdown > 0}
                     <div class="qr-status-indicator">
                       <span class="pulse-dot-green"></span>
-                      <span>Active &bull; Valid for {qrCountdown}s</span>
+                      <span>Active &bull; {t("settings.qrExpiresIn", { seconds: qrCountdown })}</span>
                     </div>
                   {:else}
                     <div class="qr-status-expired">
@@ -985,15 +1002,15 @@
 
                   <div class="qr-ticket-actions">
                     <button class="btn-secondary qr-copy-btn" onclick={copyQrTicket}>
-                      {copyQrFeedback ? "Copied! ✓" : "📋 Copy Sync Ticket"}
+                      {copyQrFeedback ? "✓ " + t("common.copied") : "📋 " + t("settings.copyTicketPayload")}
                     </button>
                     {#if qrCountdown === 0}
                       <button class="btn-primary" onclick={handleStartQrHost} disabled={qrHostLoading}>
-                        🔄 Regenerate QR
+                        🔄 {t("settings.generateQr")}
                       </button>
                     {:else}
                       <button class="btn-cancel-sync" onclick={handleStopQrHost}>
-                        ✕ Stop Session
+                        ✕ {t("common.cancel")}
                       </button>
                     {/if}
                   </div>
@@ -1002,7 +1019,7 @@
 
               {#if qrHostSuccess}
                 <div class="sync-success-box highlight">
-                  ✓ Mobile device linked successfully! Cloned account with <strong>{qrHostSuccess.nickname}</strong>.
+                  ✓ {t("settings.qrHostSuccessTitle")} (<strong>{qrHostSuccess.nickname}</strong>)
                 </div>
               {/if}
               {#if qrHostError}
@@ -1015,11 +1032,11 @@
             <!-- Right Card: Scan / Import -->
             <div class="sync-card">
               <div class="sync-card-header">
-                <h5>📱 Companion Device (Client)</h5>
+                <h5>{t("settings.qrImportTitle")}</h5>
                 <span class="sync-role-badge">Import Identity</span>
               </div>
               <p class="card-desc">
-                Scan the QR code displayed on your PC, or paste the sync ticket to clone the identity directly.
+                {t("settings.qrImportDesc")}
               </p>
 
               <div class="scan-actions-group">
@@ -1028,7 +1045,7 @@
                   onclick={handleScanQrWithCamera}
                   disabled={qrImportLoading || isScanningCamera}
                 >
-                  📷 Scan QR with Camera
+                  {isScanningCamera ? t("settings.stopCamera") : t("settings.scanCamera")}
                 </button>
 
                 {#if isScanningCamera}
@@ -1052,7 +1069,7 @@
                 {/if}
 
                 <div class="manual-input-section">
-                  <label for="qr-ticket-paste" class="input-sublabel">Or paste Sync Ticket:</label>
+                  <label for="qr-ticket-paste" class="input-sublabel">{t("settings.pasteTicket")}:</label>
                   <div class="manual-ticket-row">
                     <input
                       id="qr-ticket-paste"
@@ -1061,8 +1078,8 @@
                       placeholder="p2psync://<ticket>/<token>"
                       bind:value={qrImportInput}
                     />
-                    <button class="btn-secondary" onclick={handlePasteTicket} title="Paste from clipboard">
-                      📋 Paste
+                    <button class="btn-secondary" onclick={handlePasteTicket} title={t("settings.pasteTicket")}>
+                      📋 {t("chat.paste")}
                     </button>
                   </div>
                   <button
@@ -1070,13 +1087,13 @@
                     onclick={() => handleImportQr()}
                     disabled={qrImportLoading || !qrImportInput.trim()}
                   >
-                    {qrImportLoading ? "Cloning Account & History..." : "Import Account from Ticket"}
+                    {qrImportLoading ? t("common.loading") : t("settings.importSync")}
                   </button>
                 </div>
 
                 {#if qrImportResult}
                   <div class="sync-success-box highlight">
-                    ✓ Account Cloned Successfully! Identity: <strong>{qrImportResult.nickname}</strong> ({qrImportResult.contacts_imported} contacts & {qrImportResult.messages_imported} messages synced).
+                    ✓ {t("settings.syncSuccess", { contacts: qrImportResult.contacts_imported, messages: qrImportResult.messages_imported })}
                   </div>
                 {/if}
                 {#if qrImportError}
@@ -1093,14 +1110,14 @@
         <div class="settings-group collapsed-group">
           <details class="advanced-sync-details">
             <summary class="advanced-sync-summary">
-              📦 Advanced: Blob Archive Export & Import
+              📦 {t("settings.legacySyncTitle")}
             </summary>
             <div class="advanced-sync-content">
               <p class="section-desc">
-                Export chat history snapshot as an independent content-addressed iroh-blob ticket without overwriting your device identity.
+                {t("settings.legacySyncDesc")}
               </p>
               <button class="btn-secondary" onclick={handleGenerateSyncTicket} disabled={syncLoading}>
-                {syncLoading ? "Exporting blob..." : "Generate Blob Ticket"}
+                {syncLoading ? t("common.loading") : t("settings.generateLegacyTicket")}
               </button>
               {#if syncTicket}
                 <div class="sync-ticket-box">
@@ -1110,14 +1127,14 @@
                   <div class="ticket-row">
                     <input type="text" class="ticket-input" readonly value={syncTicket.ticket} />
                     <button class="btn-secondary" onclick={copySyncTicket}>
-                      {copyFeedback ? "Copied! ✓" : "Copy Ticket"}
+                      {copyFeedback ? "✓ " + t("common.copied") : t("common.copy")}
                     </button>
                   </div>
                 </div>
               {/if}
 
               <div class="import-blob-block">
-                <label for="import-sync-ticket-input" class="input-sublabel">Import Blob History Ticket:</label>
+                <label for="import-sync-ticket-input" class="input-sublabel">{t("settings.importLegacyTicket")}:</label>
                 <textarea
                   id="import-sync-ticket-input"
                   class="sync-textarea"
@@ -1129,11 +1146,11 @@
                   onclick={handleImportSyncTicket}
                   disabled={syncLoading || !importTicketInput.trim()}
                 >
-                  {syncLoading ? "Importing..." : "Import Messages from Blob"}
+                  {syncLoading ? t("common.loading") : t("settings.importLegacyTicket")}
                 </button>
                 {#if syncResult}
                   <div class="sync-success-box">
-                    ✓ Synced {syncResult.contacts_imported} contacts & {syncResult.messages_imported} messages.
+                    ✓ {t("settings.syncSuccess", { contacts: syncResult.contacts_imported, messages: syncResult.messages_imported })}
                   </div>
                 {/if}
                 {#if syncError}
@@ -1145,6 +1162,45 @@
             </div>
           </details>
         </div>
+
+      {:else if activeTab === "language"}
+        <div class="settings-group">
+          <h4>{t("settings.languageTitle")}</h4>
+          <p class="section-desc">
+            {t("settings.languageDesc")}
+          </p>
+
+          <div class="language-selection-grid">
+            {#each SUPPORTED_LOCALES as loc}
+              {@const isActive = i18n.currentLocale === loc.code}
+              <button
+                class="language-card"
+                class:active={isActive}
+                onclick={() => setLocale(loc.code)}
+                type="button"
+              >
+                <div class="lang-flag-badge">{loc.flag}</div>
+                <div class="lang-info-col">
+                  <span class="lang-native-name">{loc.name}</span>
+                  <span class="lang-english-name">{loc.englishName}</span>
+                </div>
+                {#if isActive}
+                  <span class="lang-active-check">✓</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+
+          <div class="technical-notice-box">
+            <span class="notice-icon">ℹ️</span>
+            <p class="notice-text">
+              {t("settings.technicalTermsNotice")}
+            </p>
+          </div>
+        </div>
+
+      {:else if activeTab === "guide"}
+        <UserManual onNavigateTab={(tab) => activeTab = tab} />
       {/if}
     </div>
   </div>
@@ -2239,5 +2295,100 @@
     flex-direction: column;
     gap: 8px;
     margin-top: 6px;
+  }
+
+  /* Language Selection Tab */
+  .language-selection-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+  }
+
+  .language-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    min-height: 48px;
+    background: var(--surface-card, var(--bg-secondary));
+    border: var(--border-width) solid var(--border-color);
+    border-radius: var(--border-radius);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+    word-break: break-word;
+    outline: none;
+  }
+
+  .language-card:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--accent-primary);
+    transform: translateY(-1px);
+  }
+
+  .language-card.active {
+    background: rgba(79, 70, 229, 0.14);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 1px var(--accent-primary);
+  }
+
+  .lang-flag-badge {
+    font-size: 1.8rem;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .lang-info-col {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .lang-native-name {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .lang-english-name {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .lang-active-check {
+    font-size: 1.2rem;
+    font-weight: 800;
+    color: var(--accent-hover);
+    flex-shrink: 0;
+  }
+
+  .technical-notice-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--bg-secondary);
+    border-left: 3px solid var(--accent-primary);
+    border-radius: 4px;
+    margin-top: 18px;
+  }
+
+  .technical-notice-box .notice-icon {
+    font-size: 1.25rem;
+    flex-shrink: 0;
+  }
+
+  .technical-notice-box .notice-text {
+    margin: 0;
+    font-size: 0.84rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+    word-break: break-word;
   }
 </style>

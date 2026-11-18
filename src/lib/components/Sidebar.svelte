@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { UserProfile, Contact, RoomState, ContextMenuItem } from "../types";
   import { api } from "../api";
+  import { t } from "../i18n";
   import Avatar from "./Avatar.svelte";
   import ContextMenu from "./ContextMenu.svelte";
 
@@ -96,7 +97,7 @@
 
     const items: ContextMenuItem[] = [
       {
-        label: "Start 1-on-1 Call",
+        label: t("sidebar.startCall"),
         icon: "📞",
         action: () => {
           if (onDirectCall) {
@@ -107,7 +108,7 @@
         },
       },
       {
-        label: "Copy User ID",
+        label: t("sidebar.copyUserId"),
         icon: "📋",
         action: async () => {
           try {
@@ -123,7 +124,7 @@
         action: () => {},
       },
       {
-        label: "Remove Contact",
+        label: t("sidebar.removeContact"),
         icon: "🗑️",
         danger: true,
         action: () => {
@@ -218,14 +219,14 @@
         <span class="brand-sub">Serverless Mesh</span>
       </div>
     </div>
-    <button class="icon-btn" title="Settings" onclick={onOpenSettings}>
+    <button class="icon-btn" title={t("sidebar.settingsTooltip")} onclick={onOpenSettings}>
       ⚙
     </button>
   </div>
 
   <!-- Room Management Section -->
   <div class="sidebar-section">
-    <div class="section-title">VOICE ROOM</div>
+    <div class="section-title">{t("sidebar.voiceRoom")}</div>
     {#if roomState}
       <div
         class="active-room-card"
@@ -242,13 +243,13 @@
         <div class="room-info">
           <span class="room-icon">🔊</span>
           <div class="room-details">
-            <span class="room-name">{roomState.room_id.startsWith("call_") ? "1-on-1 Direct Call" : roomState.room_id}</span>
-            <span class="room-meta">{roomState.room_id.startsWith("call_") ? "Private 2-Peer Call" : `${roomState.peers.length} connected`}</span>
+            <span class="room-name">{roomState.room_id.startsWith("call_") ? t("sidebar.directCall") : roomState.room_id}</span>
+            <span class="room-meta">{roomState.room_id.startsWith("call_") ? t("sidebar.privateCallMeta") : t("sidebar.peersConnected", { count: roomState.peers.length })}</span>
           </div>
         </div>
         <button
           class="leave-btn"
-          title="Leave Room"
+          title={t("sidebar.leaveRoomTooltip")}
           onclick={(e) => {
             e.stopPropagation();
             onLeaveRoom();
@@ -262,11 +263,11 @@
         <input
           type="text"
           class="sidebar-input"
-          placeholder="Room ID or Ticket..."
+          placeholder={t("sidebar.roomInputPlaceholder")}
           bind:value={targetRoomInput}
           onkeydown={(e) => e.key === "Enter" && handleJoinRoom()}
         />
-        <button class="sidebar-action-btn" onclick={handleJoinRoom}>Join</button>
+        <button class="sidebar-action-btn" onclick={handleJoinRoom}>{t("sidebar.join")}</button>
       </div>
     {/if}
   </div>
@@ -274,15 +275,15 @@
   <!-- Contacts List -->
   <div class="sidebar-section contacts-section">
     <div class="section-header-row">
-      <span class="section-title">DIRECT CONTACTS ({contacts.length})</span>
-      <button class="add-contact-btn" title="Add Contact" onclick={() => (showAddContactModal = true)}>
-        + Add
+      <span class="section-title">{t("sidebar.directContacts", { count: contacts.length })}</span>
+      <button class="add-contact-btn" title={t("sidebar.addContact")} onclick={() => (showAddContactModal = true)}>
+        {t("sidebar.addContact")}
       </button>
     </div>
 
     <div class="contacts-list">
       {#if contacts.length === 0}
-        <div class="empty-state">No contacts added yet.</div>
+        <div class="empty-state">{t("sidebar.noContacts")}</div>
       {:else}
         {#each contacts as contact}
           <div
@@ -316,7 +317,7 @@
             </div>
             <button
               class="quick-call-btn"
-              title="Start 1-on-1 Call"
+              title={t("sidebar.startCall")}
               onclick={(e) => {
                 e.stopPropagation();
                 if (onDirectCall) {
@@ -343,7 +344,7 @@
         role="button"
         tabindex="0"
         onkeydown={(e) => e.key === "Enter" && onOpenSettings()}
-        title="Profile Settings"
+        title={t("sidebar.profileSettingsTooltip")}
       >
         <Avatar
           hash={profile?.avatar_hash}
@@ -366,16 +367,16 @@
         <button
           type="button"
           class="user-nickname-btn"
-          title="Click to edit nickname"
+          title={t("sidebar.clickToEditNickname")}
           onclick={startEditNickname}
         >
-          {profile?.nickname || "Connecting..."}
+          {profile?.nickname || t("common.connecting")}
         </button>
       {/if}
       <button
         type="button"
         class="user-id-btn"
-        title="Click to copy full ID"
+        title={t("sidebar.clickToCopyId")}
         onclick={copyNodeId}
       >
         <span class="user-id">{formatShortId(profile?.node_id || "")}</span>
@@ -387,7 +388,7 @@
       <button
         class="toggle-btn"
         class:active={isMuted}
-        title={isMuted ? "Unmute Mic" : "Mute Mic"}
+        title={isMuted ? t("sidebar.unmuteMic") : t("sidebar.muteMic")}
         onclick={toggleMute}
       >
         {isMuted ? "🔇" : "🎤"}
@@ -395,7 +396,7 @@
       <button
         class="toggle-btn"
         class:active={isDeafened}
-        title={isDeafened ? "Undeafen Audio" : "Deafen Audio"}
+        title={isDeafened ? t("sidebar.undeafenAudio") : t("sidebar.deafenAudio")}
         onclick={toggleDeafen}
       >
         {isDeafened ? "🔈" : "🎧"}
@@ -416,22 +417,22 @@
   >
     <div class="modal-card" role="document">
       <div class="modal-header">
-        <h4>Add Contact</h4>
+        <h4>{t("sidebar.addContactModalTitle")}</h4>
         <button class="modal-close-btn" onclick={() => (showAddContactModal = false)}>&times;</button>
       </div>
       <div class="modal-body">
-        <label for="contact-input-id">User ID</label>
+        <label for="contact-input-id">{t("sidebar.addContactInputLabel")}</label>
         <input
           id="contact-input-id"
           type="text"
           class="modal-input"
-          placeholder="Paste user ID..."
+          placeholder={t("sidebar.addContactPlaceholder")}
           bind:value={newContactNodeId}
         />
       </div>
       <div class="modal-footer">
-        <button class="btn-cancel" onclick={() => (showAddContactModal = false)}>Cancel</button>
-        <button class="btn-primary" onclick={handleAddContactSubmit}>Add Contact</button>
+        <button class="btn-cancel" onclick={() => (showAddContactModal = false)}>{t("common.cancel")}</button>
+        <button class="btn-primary" onclick={handleAddContactSubmit}>{t("sidebar.addContactSubmit")}</button>
       </div>
     </div>
   </div>
@@ -461,16 +462,16 @@
       aria-modal="true"
       tabindex="-1"
     >
-      <h4>Remove Contact</h4>
+      <h4>{t("sidebar.removeContactModalTitle")}</h4>
       <p>
-        Are you sure you want to remove <strong>{contactToRemove.nickname}</strong> ({formatShortId(contactToRemove.node_id)}) from your contacts?
+        {t("sidebar.removeContactModalConfirm", { name: contactToRemove.nickname, id: formatShortId(contactToRemove.node_id) })}
       </p>
       <div class="confirm-modal-actions">
         <button class="btn-cancel-modal" onclick={() => (contactToRemove = null)} disabled={isRemovingContact}>
-          Cancel
+          {t("common.cancel")}
         </button>
         <button class="btn-danger-modal" onclick={handleConfirmRemoveContact} disabled={isRemovingContact}>
-          {isRemovingContact ? "Removing..." : "Remove Contact"}
+          {isRemovingContact ? t("sidebar.removeContactRemoving") : t("sidebar.removeContact")}
         </button>
       </div>
     </div>

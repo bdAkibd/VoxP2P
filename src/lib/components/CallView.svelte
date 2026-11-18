@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RoomState, PeerInfo, UserProfile } from "../types";
   import { api } from "../api";
+  import { t } from "../i18n";
   import Avatar from "./Avatar.svelte";
 
   let {
@@ -79,28 +80,28 @@
   {#if !roomState}
     <div class="idle-call-state">
       <div class="idle-icon">🎙️</div>
-      <h3>No Active Voice Call</h3>
-      <p>Join or create a room from the sidebar to start speaking with end-to-end P2P mesh audio.</p>
+      <h3>{t("call.noActiveCallTitle")}</h3>
+      <p>{t("call.noActiveCallDesc")}</p>
     </div>
   {:else}
     <div class="call-view-header">
       <div class="call-title-wrap">
         <span class="live-dot"></span>
-        <span class="room-title">Room: {roomState.room_id}</span>
-        <span class="peer-count">({roomState.peers.length} active {roomState.peers.length === 1 ? "peer" : "peers"})</span>
+        <span class="room-title">{t("call.roomLabel", { id: roomState.room_id })}</span>
+        <span class="peer-count">{t("call.activePeers", { count: roomState.peers.length, peers: roomState.peers.length === 1 ? t("call.peerSingular") : t("call.peerPlural") })}</span>
       </div>
       <div class="call-header-right">
         <button
           class="share-ticket-btn"
           class:copied={copyTicketFeedback}
-          title="Copy Room Ticket (Topic ID + Bootstrap Multiaddr) for peer invites"
+          title={t("call.copyTicketTooltip")}
           onclick={copyRoomTicket}
         >
-          {copyTicketFeedback ? "✓ Ticket Copied!" : "📋 Copy Room Ticket"}
+          {copyTicketFeedback ? t("call.ticketCopied") : t("call.copyTicket")}
         </button>
         <div class="call-meta-badges">
-          <span class="meta-badge">QUIC Mesh Relay</span>
-          <span class="meta-badge">48kHz RNNoise</span>
+          <span class="meta-badge">{t("call.badgeRelay")}</span>
+          <span class="meta-badge">{t("call.badgeRnnoise")}</span>
         </div>
       </div>
     </div>
@@ -128,17 +129,17 @@
               isSpeaking={isSpeaking(peer.node_id)}
             />
             {#if peer.is_host}
-              <div class="host-crown-badge" title="Room Host">👑</div>
+              <div class="host-crown-badge" title={t("call.hostBadge")}>👑</div>
             {/if}
             {#if peer.is_muted}
-              <div class="muted-badge" title="Muted">🔇</div>
+              <div class="muted-badge" title={t("call.mutedBadge")}>🔇</div>
             {/if}
           </div>
 
           <div class="peer-name-row">
             <span class="peer-nickname">{peer.nickname}</span>
             {#if peer.node_id === profile?.node_id}
-              <span class="you-tag">(You)</span>
+              <span class="you-tag">({t("common.you")})</span>
             {/if}
           </div>
 
@@ -167,14 +168,14 @@
     <div class="menu-header">
       <span>{contextMenuPeer.nickname}</span>
       {#if contextMenuPeer.is_host}
-        <span class="crown-mini">👑 Host</span>
+        <span class="crown-mini">👑 {t("common.host")}</span>
       {/if}
     </div>
 
     <!-- Peer Volume Slider (0 - 200%) -->
     <div class="menu-item-slider">
       <div class="slider-labels">
-        <span>Volume</span>
+        <span>{t("call.volume")}</span>
         <span>{Math.round((peerVolumeMap[contextMenuPeer.node_id] ?? 1.0) * 100)}%</span>
       </div>
       <input
@@ -197,7 +198,7 @@
         class="menu-btn-action"
         onclick={() => handleTransferHost(contextMenuPeer!.node_id)}
       >
-        👑 Transfer Host Role
+        {t("call.transferHost")}
       </button>
     {/if}
   </div>

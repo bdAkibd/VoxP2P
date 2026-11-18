@@ -3,6 +3,7 @@
   import type { UserProfile, Contact, RoomState, Message, DirectCallRingPayload } from "$lib/types";
   import { initTheme, type ThemeConfig } from "$lib/theme";
   import { api } from "$lib/api";
+  import { t, initLocale } from "$lib/i18n";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import CallView from "$lib/components/CallView.svelte";
   import ChatView from "$lib/components/ChatView.svelte";
@@ -24,12 +25,12 @@
   let isDrawerOpen = $state<boolean>(false);
   let permissionWarning = $state<string | null>(null);
   let mobileTab = $state<"chats" | "call" | "contacts" | "settings">("chats");
-  let settingsInitialTab = $state<"audio" | "network" | "theme" | "sync">("audio");
+  let settingsInitialTab = $state<"account" | "audio" | "network" | "theme" | "sync" | "language" | "guide">("audio");
 
   async function checkMicPermissionOrAlert(): Promise<boolean> {
     const granted = await api.requestMicPermission();
     if (!granted) {
-      permissionWarning = "Доступ к микрофону отклонен. Для голосового общения в комнатах и звонков необходимо разрешить доступ к микрофону в системных настройках устройства.";
+      permissionWarning = t("notifications.micPermissionDesc");
       return false;
     }
     return true;
@@ -72,12 +73,15 @@
     }
   }
 
-  function openSettings(tab: "audio" | "network" | "theme" | "sync" = "audio") {
+  function openSettings(tab: "account" | "audio" | "network" | "theme" | "sync" | "language" | "guide" = "audio") {
     settingsInitialTab = tab;
     showSettingsModal = true;
   }
 
   onMount(() => {
+    // 0. Initialize Language (i18n)
+    initLocale().catch(console.error);
+
     // Disable default WebView right-click context menu
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -385,10 +389,10 @@
           >
             <span class="live-dot pulse"></span>
             <span class="banner-title">
-              🔊 {roomState.room_id.startsWith("call_") ? "1-on-1 Call" : "In Voice Room"}: <strong>{roomState.room_id}</strong>
+              🔊 {roomState.room_id.startsWith("call_") ? t("call.directCallTitle") : t("call.inRoom")}: <strong>{roomState.room_id}</strong>
             </span>
             <span class="banner-peer-count">
-              ({roomState.peers.length} active {roomState.peers.length === 1 ? "peer" : "peers"})
+              ({t("call.activePeers", { count: roomState.peers.length, peerText: roomState.peers.length === 1 ? t("call.peerSingular") : t("call.peerPlural") })})
             </span>
           </div>
           <div class="banner-right">
@@ -396,10 +400,10 @@
               class="banner-btn return-btn"
               onclick={() => (activeChatId = roomState!.room_id)}
             >
-              Return to Call
+              {t("call.returnToCall")}
             </button>
             <button class="banner-btn leave-btn" onclick={handleLeaveRoom}>
-              Leave Call
+              {t("call.leaveCall")}
             </button>
           </div>
         </div>
@@ -444,7 +448,7 @@
                 <span class="mobile-chat-title">{getContactName(activeChatId)}</span>
                 {#if activeChatId !== "lobby"}
                   <span class="mobile-chat-sub">
-                    {activeChatId.startsWith("room_") ? "Mesh Room" : "Direct Message"}
+                    {activeChatId.startsWith("room_") ? t("mobile.meshRoom") : t("mobile.directMessage")}
                   </span>
                 {/if}
               </div>
@@ -453,18 +457,18 @@
               {#if activeChatId !== "lobby" && !activeChatId.startsWith("room_")}
                 <button
                   class="mobile-touch-btn"
-                  title="Call Contact"
+                  title={t("mobile.callContact")}
                   onclick={() => handleDirectCall(activeChatId)}
-                  aria-label="Call Contact"
+                  aria-label={t("mobile.callContact")}
                 >
                   📞
                 </button>
               {/if}
               <button
                 class="mobile-touch-btn"
-                title="Scan QR Code"
+                title={t("mobile.scanQr")}
                 onclick={() => openSettings("sync")}
-                aria-label="Scan QR Code"
+                aria-label={t("mobile.scanQr")}
               >
                 📷
               </button>
@@ -482,11 +486,11 @@
               <div class="banner-left">
                 <span class="live-dot pulse"></span>
                 <span class="banner-title">
-                  🔊 Active Call: <strong>{roomState.room_id}</strong>
+                  {t("mobile.activeVoiceCall")}: <strong>{roomState.room_id}</strong>
                 </span>
               </div>
               <button class="banner-btn return-btn" onclick={() => (mobileTab = "call")}>
-                View Call ›
+                {t("call.viewCall")}
               </button>
             </div>
           {/if}
@@ -514,10 +518,10 @@
       {:else if mobileTab === "call"}
         <div class="mobile-tab-content">
           <div class="mobile-header-bar">
-            <span class="mobile-chat-title">🔊 Active Voice Call</span>
+            <span class="mobile-chat-title">{t("mobile.activeVoiceCall")}</span>
             {#if roomState}
               <button class="banner-btn leave-btn" onclick={handleLeaveRoom}>
-                Leave Call
+                {t("call.leaveCall")}
               </button>
             {/if}
           </div>
@@ -529,14 +533,14 @@
               <div class="mobile-idle-screen">
                 <div class="idle-card-box">
                   <div class="idle-big-icon">🎙️</div>
-                  <h3>No Active Call</h3>
-                  <p>You are not currently in a voice call. Join the general lobby or call a contact directly.</p>
+                  <h3>{t("mobile.noActiveCallTitle")}</h3>
+                  <p>{t("mobile.noActiveCallDesc")}</p>
                   <div class="idle-actions-col">
                     <button class="btn-primary hero-btn" onclick={() => handleJoinRoom("lobby")}>
-                      🏠 Join Public Lobby
+                      {t("mobile.joinPublicLobby")}
                     </button>
                     <button class="btn-secondary hero-btn" onclick={() => (mobileTab = "contacts")}>
-                      👥 Choose a Contact
+                      {t("mobile.chooseContact")}
                     </button>
                   </div>
                 </div>
@@ -573,26 +577,44 @@
       {:else if mobileTab === "settings"}
         <div class="mobile-tab-content">
           <div class="mobile-header-bar">
-            <span class="mobile-chat-title">⚙️ Settings & Device Sync</span>
+            <span class="mobile-chat-title">{t("mobile.tabSettings")} & {t("settings.syncTitle")}</span>
           </div>
 
           <div class="mobile-screen-scrollable mobile-settings-padding">
             <!-- QR Sync Hero Card -->
             <div class="mobile-hero-qr-card">
-              <div class="hero-qr-badge">📷 QR SYNC</div>
-              <h4>Link Mobile Device</h4>
-              <p>Scan a QR code from your desktop PC to instantly clone your account, contacts, and chat history.</p>
+              <div class="hero-qr-badge">{t("mobile.qrSyncHeroBadge")}</div>
+              <h4>{t("mobile.qrSyncHeroTitle")}</h4>
+              <p>{t("mobile.qrSyncHeroDesc")}</p>
               <button class="btn-primary hero-qr-action-btn" onclick={() => openSettings("sync")}>
-                📷 Scan QR or Generate Ticket
+                {t("mobile.qrSyncHeroBtn")}
               </button>
             </div>
 
             <div class="mobile-settings-nav-group">
+              <button class="mobile-settings-row-btn" onclick={() => openSettings("language")}>
+                <span class="settings-row-icon">🌐</span>
+                <div class="settings-row-text">
+                  <span class="settings-row-title">{t("mobile.navLanguage")}</span>
+                  <span class="settings-row-desc">{t("mobile.navLanguageDesc")}</span>
+                </div>
+                <span class="settings-row-chevron">›</span>
+              </button>
+
+              <button class="mobile-settings-row-btn" onclick={() => openSettings("guide")}>
+                <span class="settings-row-icon">📖</span>
+                <div class="settings-row-text">
+                  <span class="settings-row-title">{t("mobile.navManual")}</span>
+                  <span class="settings-row-desc">{t("mobile.navManualDesc")}</span>
+                </div>
+                <span class="settings-row-chevron">›</span>
+              </button>
+
               <button class="mobile-settings-row-btn" onclick={() => openSettings("audio")}>
                 <span class="settings-row-icon">🎙️</span>
                 <div class="settings-row-text">
-                  <span class="settings-row-title">Voice & Audio</span>
-                  <span class="settings-row-desc">Microphone gain, RNNoise AI suppression & sensitivity</span>
+                  <span class="settings-row-title">{t("mobile.navVoiceAudio")}</span>
+                  <span class="settings-row-desc">{t("mobile.navVoiceAudioDesc")}</span>
                 </div>
                 <span class="settings-row-chevron">›</span>
               </button>
@@ -600,8 +622,8 @@
               <button class="mobile-settings-row-btn" onclick={() => openSettings("theme")}>
                 <span class="settings-row-icon">🎨</span>
                 <div class="settings-row-text">
-                  <span class="settings-row-title">Theme Studio</span>
-                  <span class="settings-row-desc">Dark Minimal, Cyberpunk, AMOLED, custom palette</span>
+                  <span class="settings-row-title">{t("mobile.navThemeStudio")}</span>
+                  <span class="settings-row-desc">{t("mobile.navThemeStudioDesc")}</span>
                 </div>
                 <span class="settings-row-chevron">›</span>
               </button>
@@ -609,8 +631,8 @@
               <button class="mobile-settings-row-btn" onclick={() => openSettings("network")}>
                 <span class="settings-row-icon">🌐</span>
                 <div class="settings-row-text">
-                  <span class="settings-row-title">Network & VPN Bypass</span>
-                  <span class="settings-row-desc">Direct binding, P2P NAT relay, serverless status</span>
+                  <span class="settings-row-title">{t("mobile.navNetwork")}</span>
+                  <span class="settings-row-desc">{t("mobile.navNetworkDesc")}</span>
                 </div>
                 <span class="settings-row-chevron">›</span>
               </button>
@@ -619,8 +641,8 @@
             <!-- Profile Overview Card -->
             <div class="mobile-account-summary">
               <div class="account-summary-top">
-                <span class="account-badge">My Account</span>
-                <span class="online-tag">● Connected</span>
+                <span class="account-badge">{t("mobile.myAccount")}</span>
+                <span class="online-tag">{t("mobile.connectedTag")}</span>
               </div>
               <div class="account-summary-profile">
                 <Avatar hash={profile?.avatar_hash} nickname={profile?.nickname} size={48} />
@@ -640,17 +662,17 @@
           class="nav-tab-btn"
           class:active={mobileTab === "chats"}
           onclick={() => (mobileTab = "chats")}
-          aria-label="Chats"
+          aria-label={t("mobile.tabChats")}
         >
           <span class="nav-tab-icon">💬</span>
-          <span class="nav-tab-label">Chats</span>
+          <span class="nav-tab-label">{t("mobile.tabChats")}</span>
         </button>
 
         <button
           class="nav-tab-btn"
           class:active={mobileTab === "call"}
           onclick={() => (mobileTab = "call")}
-          aria-label="Active Call"
+          aria-label={t("mobile.tabCall")}
         >
           <div class="nav-icon-container">
             <span class="nav-tab-icon">🔊</span>
@@ -658,14 +680,14 @@
               <span class="live-call-dot pulse"></span>
             {/if}
           </div>
-          <span class="nav-tab-label">Call</span>
+          <span class="nav-tab-label">{t("mobile.tabCall")}</span>
         </button>
 
         <button
           class="nav-tab-btn"
           class:active={mobileTab === "contacts"}
           onclick={() => (mobileTab = "contacts")}
-          aria-label="Contacts"
+          aria-label={t("mobile.tabContacts")}
         >
           <div class="nav-icon-container">
             <span class="nav-tab-icon">👥</span>
@@ -673,17 +695,17 @@
               <span class="contacts-count-bubble">{contacts.length}</span>
             {/if}
           </div>
-          <span class="nav-tab-label">Contacts</span>
+          <span class="nav-tab-label">{t("mobile.tabContacts")}</span>
         </button>
 
         <button
           class="nav-tab-btn"
           class:active={mobileTab === "settings"}
           onclick={() => (mobileTab = "settings")}
-          aria-label="Settings"
+          aria-label={t("mobile.tabSettings")}
         >
           <span class="nav-tab-icon">⚙️</span>
-          <span class="nav-tab-label">Settings</span>
+          <span class="nav-tab-label">{t("mobile.tabSettings")}</span>
         </button>
       </nav>
 
@@ -708,7 +730,7 @@
                 <img src="/app-icon.png" alt="VoxP2P" class="drawer-brand-logo" />
                 <span class="drawer-brand-title">VoxP2P Mesh</span>
               </div>
-              <button class="drawer-close-btn" onclick={() => (isDrawerOpen = false)} aria-label="Close Drawer">
+              <button class="drawer-close-btn" onclick={() => (isDrawerOpen = false)} aria-label={t("common.close")}>
                 &times;
               </button>
             </div>
@@ -755,10 +777,10 @@
     >
       <div class="permission-card">
         <div class="permission-icon">🎙️⚠️</div>
-        <h3>Требуется доступ к микрофону</h3>
+        <h3>{t("notifications.micPermissionTitle")}</h3>
         <p>{permissionWarning}</p>
         <button class="permission-dismiss-btn" onclick={() => (permissionWarning = null)}>
-          Понятно
+          {t("common.dismiss")}
         </button>
       </div>
     </div>
@@ -793,15 +815,15 @@
             size={68}
           />
         </div>
-        <h3 class="incoming-title">Incoming 1-on-1 Call</h3>
-        <p class="caller-name">From: <strong>{getContactName(incomingCall.caller_id)}</strong></p>
-        <span class="call-badge">Direct Encrypted P2P Voice</span>
+        <h3 class="incoming-title">{t("notifications.incomingCallTitle")}</h3>
+        <p class="caller-name">{t("notifications.fromCaller", { name: getContactName(incomingCall.caller_id) })}</p>
+        <span class="call-badge">{t("notifications.directCallBadge")}</span>
         <div class="incoming-call-actions">
           <button class="call-action-btn decline-btn" onclick={handleDeclineCall}>
-            ✕ Decline
+            {t("notifications.decline")}
           </button>
           <button class="call-action-btn accept-btn" onclick={handleAcceptCall}>
-            ✓ Accept
+            {t("notifications.accept")}
           </button>
         </div>
       </div>
@@ -842,6 +864,21 @@
     -webkit-user-select: none;
     touch-action: pan-y;
     -webkit-tap-highlight-color: transparent;
+    word-break: break-word;
+  }
+
+  /* CJK and Japanese typography rules */
+  :global(html.locale-cjk),
+  :global(.locale-cjk) {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", "Segoe UI", Roboto, sans-serif;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+    line-break: strict;
+  }
+
+  :global(.locale-cjk *) {
+    word-break: keep-all;
+    overflow-wrap: anywhere;
   }
 
   :global(input),
@@ -1468,10 +1505,6 @@
   .caller-name {
     margin: 0;
     font-size: 0.95rem;
-    color: var(--text-muted);
-  }
-
-  .caller-name strong {
     color: var(--text-primary);
   }
 
