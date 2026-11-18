@@ -54,7 +54,8 @@ jni = "0.21"
 ndk-context = "0.1"
 
 [profile.release]
-codegen-units = 1
-lto = true
 opt-level = 3
+lto = "thin"
+codegen-units = 16
 panic = "unwind"
+strip = true
