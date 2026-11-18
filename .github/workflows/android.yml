@@ -41,6 +41,7 @@ jobs:
           fi
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/ndk/26.1.10909125/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
@@ -80,6 +81,15 @@ jobs:
           # Restore custom manifest and kotlin services
           if [ -d /tmp/voxp2p_android_backup ]; then
             cp -rf /tmp/voxp2p_android_backup/* src-tauri/gen/android/ 2>/dev/null || true
+          fi
+
+          # Ensure minSdk is at least 26 for AAudio in Gradle build files
+          if [ -d src-tauri/gen/android ]; then
+            find src-tauri/gen/android -name "*.gradle.kts" -o -name "*.gradle" | while read -r f; do
+              sed -i 's/minSdk = 24/minSdk = 26/g' "$f" 2>/dev/null || true
+              sed -i 's/minSdkVersion = 24/minSdkVersion = 26/g' "$f" 2>/dev/null || true
+              sed -i 's/minSdkVersion 24/minSdkVersion 26/g' "$f" 2>/dev/null || true
+            done
           fi
 
           chmod +x src-tauri/gen/android/gradlew 2>/dev/null || true
