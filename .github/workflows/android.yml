@@ -85,7 +85,7 @@ jobs:
           chmod +x src-tauri/gen/android/gradlew 2>/dev/null || true
 
       - name: Build Tauri Android APK
-        run: npm run tauri android build -- --apk --target aarch64,armv7,x86_64
+        run: npm run tauri android build -- --apk --target aarch64 armv7 x86_64
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}

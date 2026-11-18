@@ -156,12 +156,14 @@ Each node generates a cryptographic Ed25519 keypair upon initial launch:
    ```bash
    rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
    ```
-   Build APK packages:
+   Build universal or multi-target APK:
    ```bash
-   npm run tauri android build -- --apk
+   npm run tauri android build -- --apk --target aarch64 armv7 x86_64
    ```
+   *(Optional: append `--split-per-abi` to generate separate slim APKs for each architecture)*.
+
    The resulting APK files will be located at:
-   `src-tauri/gen/android/app/build/outputs/apk/release/`
+   `src-tauri/gen/android/app/build/outputs/apk/`
 
 ---
 
