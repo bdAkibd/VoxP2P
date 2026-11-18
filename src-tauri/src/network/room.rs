@@ -1830,6 +1830,7 @@ impl RoomManager {
     }
 
     pub async fn leave_room(&self) {
+        crate::network::mobile_service::set_foreground_call_service(false, "", "");
         self.audio_connections.write().await.clear();
         if let Some(ref am) = self.get_audio_manager().await {
             am.set_packet_sender(None);

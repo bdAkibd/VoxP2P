@@ -21,8 +21,25 @@
   let showSettingsModal = $state<boolean>(false);
   let incomingCall = $state<DirectCallRingPayload | null>(null);
   let isMobile = $state<boolean>(false);
+  let isDrawerOpen = $state<boolean>(false);
+  let permissionWarning = $state<string | null>(null);
   let mobileTab = $state<"chats" | "call" | "contacts" | "settings">("chats");
   let settingsInitialTab = $state<"audio" | "network" | "theme" | "sync">("audio");
+
+  async function checkMicPermissionOrAlert(): Promise<boolean> {
+    const granted = await api.requestMicPermission();
+    if (!granted) {
+      permissionWarning = "Доступ к микрофону отклонен. Для голосового общения в комнатах и звонков необходимо разрешить доступ к микрофону в системных настройках устройства.";
+      return false;
+    }
+    return true;
+  }
+
+  $effect(() => {
+    if (activeChatId && isMobile) {
+      isDrawerOpen = false;
+    }
+  });
 
   // Swipe gesture detection
   let touchStartX = 0;
@@ -246,11 +263,13 @@
     return nodeId.length > 12 ? `${nodeId.slice(0, 8)}...` : nodeId;
   }
 
-  function handleAcceptCall() {
+  async function handleAcceptCall() {
     if (!incomingCall) return;
     const ticket = incomingCall.room_ticket;
     const caller = incomingCall.caller_id;
     incomingCall = null;
+    const allowed = await checkMicPermissionOrAlert();
+    if (!allowed) return;
     handleJoinRoom(ticket);
     activeChatId = caller;
   }
@@ -260,12 +279,15 @@
   }
 
   async function handleJoinRoom(roomId: string) {
+    const allowed = await checkMicPermissionOrAlert();
+    if (!allowed) return;
     try {
       const state = await api.joinRoom(roomId);
       roomState = state;
       activeChatId = roomId;
       if (isMobile) {
         mobileTab = "call";
+        isDrawerOpen = false;
       }
     } catch (err) {
       console.error("Failed to join room:", err);
@@ -285,12 +307,15 @@
   }
 
   async function handleDirectCall(contactNodeId: string) {
+    const allowed = await checkMicPermissionOrAlert();
+    if (!allowed) return;
     try {
       const state = await api.startDirectCall(contactNodeId);
       roomState = state;
       activeChatId = contactNodeId;
       if (isMobile) {
         mobileTab = "call";
+        isDrawerOpen = false;
       }
     } catch (err) {
       console.error("Failed to start direct call:", err);
@@ -403,6 +428,14 @@
         <div class="mobile-tab-content">
           <div class="mobile-header-bar">
             <div class="mobile-header-left">
+              <button
+                class="mobile-touch-btn hamburger-btn"
+                onclick={() => (isDrawerOpen = !isDrawerOpen)}
+                title="Toggle Menu"
+                aria-label="Toggle Menu"
+              >
+                ☰
+              </button>
               {#if activeChatId !== "lobby" && !activeChatId.startsWith("room_")}
                 {@const currentContact = contacts.find((c) => c.node_id === activeChatId)}
                 <Avatar hash={currentContact?.avatar_path} nickname={currentContact?.nickname || activeChatId} size={32} />
@@ -653,6 +686,81 @@
           <span class="nav-tab-label">Settings</span>
         </button>
       </nav>
+
+      <!-- Mobile Drawer Sheet (Hamburger Menu) -->
+      {#if isDrawerOpen}
+        <div
+          class="mobile-drawer-backdrop"
+          onclick={() => (isDrawerOpen = false)}
+          onkeydown={(e) => e.key === "Escape" && (isDrawerOpen = false)}
+          role="presentation"
+        >
+          <div
+            class="mobile-drawer-sheet"
+            onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            tabindex="-1"
+          >
+            <div class="mobile-drawer-header">
+              <div class="drawer-brand">
+                <img src="/app-icon.png" alt="VoxP2P" class="drawer-brand-logo" />
+                <span class="drawer-brand-title">VoxP2P Mesh</span>
+              </div>
+              <button class="drawer-close-btn" onclick={() => (isDrawerOpen = false)} aria-label="Close Drawer">
+                &times;
+              </button>
+            </div>
+            <div class="mobile-drawer-content">
+              <Sidebar
+                {profile}
+                {contacts}
+                {roomState}
+                bind:activeChatId
+                bind:isMuted
+                bind:isDeafened
+                onOpenSettings={() => {
+                  isDrawerOpen = false;
+                  openSettings("audio");
+                }}
+                onJoinRoom={(roomId) => {
+                  isDrawerOpen = false;
+                  handleJoinRoom(roomId);
+                  mobileTab = "call";
+                }}
+                onLeaveRoom={handleLeaveRoom}
+                onAddContact={handleAddContact}
+                onDirectCall={(nid) => {
+                  isDrawerOpen = false;
+                  handleDirectCall(nid);
+                  mobileTab = "call";
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Microphone Runtime Permission Warning Modal -->
+  {#if permissionWarning}
+    <div
+      class="permission-overlay"
+      role="alertdialog"
+      aria-modal="true"
+      tabindex="-1"
+      onkeydown={(e) => e.key === "Escape" && (permissionWarning = null)}
+    >
+      <div class="permission-card">
+        <div class="permission-icon">🎙️⚠️</div>
+        <h3>Требуется доступ к микрофону</h3>
+        <p>{permissionWarning}</p>
+        <button class="permission-dismiss-btn" onclick={() => (permissionWarning = null)}>
+          Понятно
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -724,11 +832,25 @@
     padding: 0;
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     background-color: var(--bg-primary);
     color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: pan-y;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(input),
+  :global(textarea),
+  :global(.selectable-text),
+  :global(.message-bubble),
+  :global(.message-text) {
+    user-select: text;
+    -webkit-user-select: text;
   }
 
   :global(*), :global(*::before), :global(*::after) {
@@ -858,9 +980,12 @@
     flex-direction: column;
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     position: relative;
     background: var(--bg-primary);
+    padding-top: env(safe-area-inset-top, 0px);
+    box-sizing: border-box;
   }
 
   .mobile-tab-content {
@@ -869,7 +994,7 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    padding-bottom: 60px;
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
     box-sizing: border-box;
   }
 
@@ -963,7 +1088,8 @@
     bottom: 0;
     left: 0;
     right: 0;
-    height: 60px;
+    height: calc(60px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     background: var(--bg-secondary);
     border-top: var(--border-width) solid var(--border-color);
     display: flex;
@@ -971,6 +1097,7 @@
     align-items: center;
     z-index: 100;
     box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.45);
+    box-sizing: border-box;
   }
 
   .nav-tab-btn {
@@ -1398,5 +1525,168 @@
 
   .accept-btn:hover {
     filter: brightness(1.1);
+  }
+
+  /* Mobile Drawer Sheet */
+  .mobile-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    z-index: 200;
+    display: flex;
+    backdrop-filter: blur(4px);
+    animation: fade-in 0.2s ease;
+  }
+
+  .mobile-drawer-sheet {
+    width: 84vw;
+    max-width: 320px;
+    height: 100%;
+    background: var(--bg-secondary);
+    display: flex;
+    flex-direction: column;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-sizing: border-box;
+    animation: slide-in-left 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes slide-in-left {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .mobile-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: var(--border-width) solid var(--border-color);
+    min-height: 54px;
+    box-sizing: border-box;
+  }
+
+  .drawer-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .drawer-brand-logo {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--border-radius);
+    object-fit: cover;
+  }
+
+  .drawer-brand-title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text-primary);
+  }
+
+  .drawer-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    cursor: pointer;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .drawer-close-btn:hover {
+    color: var(--text-primary);
+  }
+
+  .mobile-drawer-content {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Permission Warning Dialog */
+  .permission-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 600;
+    backdrop-filter: blur(4px);
+    padding: 16px;
+    box-sizing: border-box;
+  }
+
+  .permission-card {
+    background: var(--bg-secondary);
+    border: var(--border-width) solid var(--accent-primary);
+    border-radius: calc(var(--border-radius) * 1.5);
+    padding: 24px;
+    max-width: 360px;
+    width: 100%;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55);
+    box-sizing: border-box;
+  }
+
+  .permission-icon {
+    font-size: 2.5rem;
+  }
+
+  .permission-card h3 {
+    margin: 0;
+    font-size: 1.15rem;
+    color: var(--text-primary);
+  }
+
+  .permission-card p {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+
+  .permission-dismiss-btn {
+    min-height: 44px;
+    width: 100%;
+    margin-top: 8px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    border-radius: var(--border-radius);
+    background: var(--accent-primary);
+    color: #ffffff;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .permission-dismiss-btn:active {
+    background: var(--accent-hover);
   }
 </style>

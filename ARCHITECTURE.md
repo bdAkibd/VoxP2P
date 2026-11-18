@@ -59,6 +59,8 @@
 ### Android Permissions & Mobile Capabilities
 Configured in `src-tauri/gen/android/app/src/main/AndroidManifest.xml` and `src-tauri/capabilities/mobile.json`:
 - **`RECORD_AUDIO` & `MODIFY_AUDIO_SETTINGS`**: Enables low-latency Opus microphone capture via `cpal` (AAudio / OpenSL ES backend via `ndk`).
-- **`INTERNET` & `ACCESS_NETWORK_STATE` / `ACCESS_WIFI_STATE`**: Serverless P2P QUIC hole-punching, gossip broadcast, and blob synchronization.
+- **`FOREGROUND_SERVICE` & `FOREGROUND_SERVICE_MICROPHONE` / `WAKE_LOCK`**: Keeps background voice calls alive with a persistent notification in the Android shade and prevents CPU sleep during calls.
+- **`INTERNET` & `ACCESS_NETWORK_STATE` / `ACCESS_WIFI_STATE` & `CHANGE_WIFI_MULTICAST_STATE`**: Serverless P2P QUIC hole-punching, gossip broadcast, blob synchronization, and local Wi-Fi mDNS peer discovery.
 - **`CAMERA`**: End-to-end QR code account and database cloning via `@tauri-apps/plugin-barcode-scanner` (with fallback to camera stream).
 - **Conditional Compilation**: In `src-tauri/src/network/vpn_bypass.rs`, `#[cfg(target_os = "android")]` cleanly bypasses raw desktop socket binding and setsockopt to prevent permission crashes in the Android sandbox.
+- **CI/CD Automation**: `.github/workflows/android.yml` compiles APK packages on `ubuntu-latest` with JDK 17, NDK 26.1, Rust targets (`aarch64`, `armv7`, `x86_64`), uploads artifacts and publishes GitHub Releases on `v*` tags.

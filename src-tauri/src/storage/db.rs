@@ -20,12 +20,36 @@ impl Database {
     }
 
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::new_with_key(path, None)
+    }
+
+    pub fn new_with_key<P: AsRef<Path>>(path: P, key: Option<&str>) -> Result<Self> {
         let conn = Connection::open(path)?;
+        if let Some(k) = key {
+            // Apply PRAGMA key for SQLCipher full-database page encryption (AES-256-CBC)
+            let _ = conn.pragma_update(None, "key", k);
+        }
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
         db.create_tables()?;
         Ok(db)
+    }
+
+    /// Retrieves or initializes a persistent local database encryption key for SQLCipher.
+    pub fn get_or_create_db_key(app_data_dir: &Path) -> String {
+        let key_file = app_data_dir.join(".db_key");
+        if key_file.exists() {
+            if let Ok(key_str) = std::fs::read_to_string(&key_file) {
+                let trimmed = key_str.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+        let random_token = data_encoding::HEXLOWER.encode(&iroh::SecretKey::generate().to_bytes());
+        let _ = std::fs::write(&key_file, &random_token);
+        random_token
     }
 
     pub fn create_tables(&self) -> Result<()> {

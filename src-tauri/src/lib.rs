@@ -133,6 +133,8 @@ use ipc::commands::{
     get_avatar,
     get_app_settings,
     set_app_setting,
+    start_call_foreground_service,
+    stop_call_foreground_service,
 };
 
 use network::device_sync::DeviceSyncManager;
@@ -145,6 +147,15 @@ use storage::db::Database;
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init());
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
 
     #[cfg(desktop)]
     let builder = builder.on_window_event(|window, event| {
@@ -166,7 +177,8 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir).ok();
 
             let db_path = app_data_dir.join("voxp2p.db");
-            let db = Database::new(db_path).expect("failed to initialize sqlite database");
+            let db_key = Database::get_or_create_db_key(&app_data_dir);
+            let db = Database::new_with_key(db_path, Some(&db_key)).expect("failed to initialize sqlite database");
             let node_manager =
                 NodeManager::new(db.clone()).expect("failed to initialize node manager");
             let room_manager = RoomManager::new(
@@ -365,7 +377,9 @@ pub fn run() {
             set_app_setting,
             edit_message,
             delete_message,
-            delete_contact
+            delete_contact,
+            start_call_foreground_service,
+            stop_call_foreground_service
         ])
 
         .run(tauri::generate_context!())

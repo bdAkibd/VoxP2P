@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, onDestroy } from "svelte";
   import type {
     AudioDeviceInfo,
     DeviceSyncTicket,
@@ -13,7 +14,7 @@
   import ThemeStudio from "./ThemeStudio.svelte";
   import AvatarCropperModal from "./AvatarCropperModal.svelte";
   import Avatar from "./Avatar.svelte";
-  import { scan, Format } from "@tauri-apps/plugin-barcode-scanner";
+  import { scan, Format, checkPermissions, requestPermissions } from "@tauri-apps/plugin-barcode-scanner";
 
   let {
     currentTheme = $bindable(),
@@ -204,7 +205,9 @@
     }
   }
 
-  $effect(() => {
+  let unlistenSyncHost: (() => void) | undefined;
+
+  onMount(() => {
     loadProfile();
 
     loadPersistedSettings().finally(() => {
@@ -225,9 +228,6 @@
       });
     });
 
-    let unlistenLocalLevel: (() => void) | undefined;
-    let unlistenSyncHost: (() => void) | undefined;
-
     // Listen for sync host completion
     api.onSyncHostCompleted((payload) => {
       qrHostSuccess = payload;
@@ -239,8 +239,25 @@
     }).then((u) => {
       unlistenSyncHost = u;
     });
+  });
 
-    // Activate local meter when in audio tab
+  onDestroy(() => {
+    unlistenSyncHost?.();
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    stopCamera();
+    if (isTestingMic) {
+      api.setMicTest(false).catch(console.error);
+    }
+    api.setMeterActive(false).catch(console.error);
+  });
+
+  // Dedicated effect for audio meter in the audio tab
+  $effect(() => {
+    let unlistenLocalLevel: (() => void) | undefined;
+
     if (activeTab === "audio") {
       api.setMeterActive(true).catch(console.error);
       api.onLocalInputLevel((payload) => {
@@ -259,16 +276,11 @@
 
     return () => {
       unlistenLocalLevel?.();
-      unlistenSyncHost?.();
       if (isTestingMic) {
+        isTestingMic = false;
         api.setMicTest(false).catch(console.error);
       }
       api.setMeterActive(false).catch(console.error);
-      if (countdownTimer) {
-        clearInterval(countdownTimer);
-        countdownTimer = null;
-      }
-      stopCamera();
     };
   });
 
@@ -298,12 +310,14 @@
     try {
       const payload = await api.startDeviceSyncHost();
       qrHostPayload = payload;
-      qrCountdown = payload.expires_in_secs || 120;
+      const initialSecs = payload.expires_in_secs || 120;
+      qrCountdown = initialSecs;
+      const targetTime = Date.now() + initialSecs * 1000;
+
       countdownTimer = setInterval(() => {
-        if (qrCountdown > 1) {
-          qrCountdown -= 1;
-        } else {
-          qrCountdown = 0;
+        const remaining = Math.max(0, Math.ceil((targetTime - Date.now()) / 1000));
+        qrCountdown = remaining;
+        if (remaining <= 0) {
           clearInterval(countdownTimer);
           countdownTimer = null;
         }
@@ -357,6 +371,19 @@
   async function handleScanQrWithCamera() {
     qrImportError = null;
     try {
+      try {
+        let perm = await checkPermissions();
+        if (perm !== "granted") {
+          perm = await requestPermissions();
+        }
+        if (perm !== "granted") {
+          qrImportError = "Доступ к камере отклонен. Разрешите доступ к камере в системных настройках устройства для сканирования QR-кода.";
+          return;
+        }
+      } catch (permErr) {
+        console.warn("Could not check/request barcode scanner permissions:", permErr);
+      }
+
       const scanned = await scan({
         formats: [Format.QRCode],
         cameraDirection: "back",
@@ -681,19 +708,19 @@
             </span>
           </div>
 
-          <!-- Account ID (NodeId) -->
+          <!-- Account ID -->
           <div class="setting-item">
-            <label for="profile-node-id-val">Unique P2P Address (Node ID)</label>
+            <label for="profile-node-id-val">Your ID</label>
             <div class="node-id-badge-card">
               <div class="node-id-key-icon">🔑</div>
               <div class="node-id-text-wrap">
                 <code class="node-id-code" id="profile-node-id-val">{profile?.node_id || "Loading ID..."}</code>
-                <span class="node-id-caption">Used for direct serverless connections (1-on-1 calls and Briar DM).</span>
+                <span class="node-id-caption">Used for direct connections (1-on-1 calls and chat).</span>
               </div>
               <button
                 class="btn-copy-id"
                 onclick={handleCopyNodeId}
-                title="Copy Node ID to clipboard"
+                title="Copy ID to clipboard"
               >
                 {#if copyNodeIdFeedback}
                   ✓ Copied!
@@ -2075,11 +2102,16 @@
   .scan-btn {
     width: 100%;
     padding: 10px 16px;
-    font-size: 0.9rem;
+    min-height: 44px;
+    font-size: 0.92rem;
+    font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .camera-preview-container {

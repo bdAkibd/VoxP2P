@@ -311,6 +311,7 @@ impl AudioCapturePipeline {
                         .map(|desc| desc.name() == name)
                         .unwrap_or(false)
                 })
+                .or_else(|| host.default_input_device())
                 .ok_or_else(|| format!("Input device '{name}' not found"))?
         } else {
             host.default_input_device()

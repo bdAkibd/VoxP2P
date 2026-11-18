@@ -1,12 +1,33 @@
 <script module lang="ts">
+  import { listen } from "@tauri-apps/api/event";
+  import { api } from "../api";
+
   // Module-level reactive cache shared across all Avatar components
   const avatarCache = new Map<string, string>();
   let cacheEpoch = $state(0);
+
+  export function cleanHash(val: string): string {
+    return val.replace(/.*[/\\]/, "").replace(/\.png$/, "").trim();
+  }
+
+  // Global listener for background avatar downloads from P2P peers
+  if (typeof window !== "undefined") {
+    listen<string>("avatar://downloaded", async (event) => {
+      const h = cleanHash(event.payload || "");
+      if (h) {
+        try {
+          const url = await api.getAvatar(h);
+          if (url) {
+            avatarCache.set(h, url);
+            cacheEpoch += 1;
+          }
+        } catch {}
+      }
+    }).catch(() => {});
+  }
 </script>
 
 <script lang="ts">
-  import { api } from "../api";
-
   let {
     hash = null,
     src = null,
@@ -23,23 +44,38 @@
 
   let hasImageError = $state(false);
 
-  function cleanHash(val: string): string {
-    return val.replace(/.*[/\\]/, "").replace(/\.png$/, "").trim();
-  }
-
   $effect(() => {
     if (hash) {
       const c = cleanHash(hash);
       if (c && !avatarCache.has(c)) {
-        api
-          .getAvatar(c)
-          .then((url) => {
-            if (url) {
-              avatarCache.set(c, url);
-              cacheEpoch += 1;
-            }
-          })
-          .catch(() => {});
+        let attempts = 0;
+        let timer: any = null;
+        let cancelled = false;
+
+        const tryFetch = () => {
+          if (cancelled || avatarCache.has(c)) return;
+          api
+            .getAvatar(c)
+            .then((url) => {
+              if (cancelled) return;
+              if (url) {
+                avatarCache.set(c, url);
+                cacheEpoch += 1;
+              } else if (attempts < 5) {
+                attempts += 1;
+                const delay = Math.min(1000 * Math.pow(1.5, attempts), 5000);
+                timer = setTimeout(tryFetch, delay);
+              }
+            })
+            .catch(() => {});
+        };
+
+        tryFetch();
+
+        return () => {
+          cancelled = true;
+          if (timer) clearTimeout(timer);
+        };
       }
     }
   });

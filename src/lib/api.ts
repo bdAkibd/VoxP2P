@@ -245,6 +245,50 @@ export const api = {
     return await invoke("delete_message", { messageId, forEveryone });
   },
 
+  async startCallForegroundService(title?: string, text?: string): Promise<void> {
+    return await invoke("start_call_foreground_service", { title, text });
+  },
+
+  async stopCallForegroundService(): Promise<void> {
+    return await invoke("stop_call_foreground_service");
+  },
+
+  async requestMicPermission(): Promise<boolean> {
+    try {
+      if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        return true;
+      }
+      return true;
+    } catch (err) {
+      console.warn("Microphone permission denied:", err);
+      return false;
+    }
+  },
+
+  async requestCameraPermission(): Promise<boolean> {
+    try {
+      const { checkPermissions, requestPermissions } = await import("@tauri-apps/plugin-barcode-scanner");
+      let perm = await checkPermissions();
+      if (perm === "granted") return true;
+      perm = await requestPermissions();
+      return perm === "granted";
+    } catch {
+      try {
+        if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          stream.getTracks().forEach((t) => t.stop());
+          return true;
+        }
+      } catch (err) {
+        console.warn("Camera permission denied:", err);
+        return false;
+      }
+      return false;
+    }
+  },
+
   // Event Listeners
   onAudioLevels(callback: (levels: Record<string, number>) => void): Promise<UnlistenFn> {
     return listen<Record<string, number>>("audio://levels", (event) => {

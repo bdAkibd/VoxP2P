@@ -114,6 +114,7 @@ impl AudioPlaybackPipeline {
                         .map(|desc| desc.name() == name)
                         .unwrap_or(false)
                 })
+                .or_else(|| host.default_output_device())
                 .ok_or_else(|| format!("Output device '{name}' not found"))?
         } else {
             host.default_output_device()

@@ -344,6 +344,12 @@ pub async fn start_direct_call(
             .await;
     }
 
+    crate::network::mobile_service::set_foreground_call_service(
+        true,
+        "VoxP2P",
+        "Активный защищенный звонок",
+    );
+
     Ok(updated_st)
 }
 
@@ -357,11 +363,19 @@ pub async fn join_room(
         .create_or_join_room(&room_id, host_id.as_deref())
         .await;
     let st = session.state.read().await;
+
+    crate::network::mobile_service::set_foreground_call_service(
+        true,
+        "VoxP2P",
+        "Активный защищенный звонок",
+    );
+
     Ok(st.clone())
 }
 
 #[tauri::command]
 pub async fn leave_room(room_manager: State<'_, RoomManager>) -> Result<(), String> {
+    crate::network::mobile_service::set_foreground_call_service(false, "", "");
     room_manager.leave_room().await;
     Ok(())
 }
@@ -730,4 +744,21 @@ pub async fn import_from_sync_qr(
     sync_manager: State<'_, DeviceSyncManager>,
 ) -> Result<DeviceSyncImportResult, String> {
     sync_manager.import_from_sync_qr(&qr_string).await
+}
+
+#[tauri::command]
+pub async fn start_call_foreground_service(
+    title: Option<String>,
+    text: Option<String>,
+) -> Result<(), String> {
+    let t = title.unwrap_or_else(|| "VoxP2P".to_string());
+    let txt = text.unwrap_or_else(|| "Активный защищенный звонок".to_string());
+    crate::network::mobile_service::set_foreground_call_service(true, &t, &txt);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_call_foreground_service() -> Result<(), String> {
+    crate::network::mobile_service::set_foreground_call_service(false, "", "");
+    Ok(())
 }

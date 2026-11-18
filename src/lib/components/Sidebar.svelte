@@ -42,6 +42,54 @@
   let contactToRemove = $state<Contact | null>(null);
   let isRemovingContact = $state(false);
 
+  // Mobile touch long-press context menu
+  let touchTimer: any = null;
+  let touchStartPos = { x: 0, y: 0 };
+  let touchMoved = false;
+
+  function handleContactTouchStart(e: TouchEvent, contact: Contact) {
+    if (e.touches.length !== 1) return;
+    touchMoved = false;
+    const touch = e.touches[0];
+    touchStartPos = { x: touch.clientX, y: touch.clientY };
+
+    if (touchTimer) clearTimeout(touchTimer);
+    touchTimer = setTimeout(() => {
+      touchTimer = null;
+      if (!touchMoved) {
+        const syntheticEvent = {
+          clientX: touchStartPos.x,
+          clientY: touchStartPos.y,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+        } as unknown as MouseEvent;
+        handleContactContextMenu(syntheticEvent, contact);
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+          navigator.vibrate(40);
+        }
+      }
+    }, 450);
+  }
+
+  function handleContactTouchMove(e: TouchEvent) {
+    if (!touchTimer) return;
+    const touch = e.touches[0];
+    const dx = Math.abs(touch.clientX - touchStartPos.x);
+    const dy = Math.abs(touch.clientY - touchStartPos.y);
+    if (dx > 10 || dy > 10) {
+      touchMoved = true;
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+  }
+
+  function handleContactTouchEnd() {
+    if (touchTimer) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+  }
+
   function handleContactContextMenu(e: MouseEvent, contact: Contact) {
     e.preventDefault();
     e.stopPropagation();
@@ -164,7 +212,7 @@
   <!-- Top: App Branding & Status -->
   <div class="sidebar-header">
     <div class="brand">
-      <div class="brand-logo">V</div>
+      <img src="/app-icon.png" alt="VoxP2P" class="brand-logo" />
       <div class="brand-text">
         <span class="brand-title">VoxP2P</span>
         <span class="brand-sub">Serverless Mesh</span>
@@ -244,6 +292,10 @@
             tabindex="0"
             onclick={() => (activeChatId = contact.node_id)}
             oncontextmenu={(e) => handleContactContextMenu(e, contact)}
+            ontouchstart={(e) => handleContactTouchStart(e, contact)}
+            ontouchmove={handleContactTouchMove}
+            ontouchend={handleContactTouchEnd}
+            ontouchcancel={handleContactTouchEnd}
             onkeydown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 activeChatId = contact.node_id;
@@ -323,7 +375,7 @@
       <button
         type="button"
         class="user-id-btn"
-        title="Click to copy full NodeId"
+        title="Click to copy full ID"
         onclick={copyNodeId}
       >
         <span class="user-id">{formatShortId(profile?.node_id || "")}</span>
@@ -364,16 +416,16 @@
   >
     <div class="modal-card" role="document">
       <div class="modal-header">
-        <h4>Add Peer Contact</h4>
+        <h4>Add Contact</h4>
         <button class="modal-close-btn" onclick={() => (showAddContactModal = false)}>&times;</button>
       </div>
       <div class="modal-body">
-        <label for="contact-input-id">Node ID (Public Key)</label>
+        <label for="contact-input-id">User ID</label>
         <input
           id="contact-input-id"
           type="text"
           class="modal-input"
-          placeholder="Paste 64-character Ed25519 node ID..."
+          placeholder="Paste user ID..."
           bind:value={newContactNodeId}
         />
       </div>
@@ -465,13 +517,7 @@
     width: 32px;
     height: 32px;
     border-radius: var(--border-radius);
-    background: var(--accent-primary);
-    color: #ffffff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 800;
-    font-size: 1.1rem;
+    object-fit: cover;
   }
 
   .brand-text {
@@ -675,9 +721,14 @@
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
+    min-height: 44px;
+    box-sizing: border-box;
     border-radius: var(--border-radius);
     cursor: pointer;
     transition: background 0.15s;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .contact-item:hover {

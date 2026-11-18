@@ -143,17 +143,21 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 12px;
+    padding: 10px 14px;
+    min-height: 44px;
     border: none;
     background: transparent;
     border-radius: 6px;
     color: var(--text-primary, #f1f3f7);
-    font-size: 0.85rem;
+    font-size: 0.88rem;
     font-weight: 500;
     cursor: pointer;
     text-align: left;
     width: 100%;
     transition: background 0.1s ease, color 0.1s ease;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .menu-item:hover:not(:disabled) {

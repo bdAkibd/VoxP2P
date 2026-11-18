@@ -125,6 +125,54 @@
     }
   }
 
+  // Mobile touch long-press context menu
+  let touchTimer: any = null;
+  let touchStartPos = { x: 0, y: 0 };
+  let touchMoved = false;
+
+  function handleMessageTouchStart(e: TouchEvent, msg: Message) {
+    if (e.touches.length !== 1) return;
+    touchMoved = false;
+    const touch = e.touches[0];
+    touchStartPos = { x: touch.clientX, y: touch.clientY };
+
+    if (touchTimer) clearTimeout(touchTimer);
+    touchTimer = setTimeout(() => {
+      touchTimer = null;
+      if (!touchMoved) {
+        const syntheticEvent = {
+          clientX: touchStartPos.x,
+          clientY: touchStartPos.y,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+        } as unknown as MouseEvent;
+        handleMessageContextMenu(syntheticEvent, msg);
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+          navigator.vibrate(40);
+        }
+      }
+    }, 450);
+  }
+
+  function handleMessageTouchMove(e: TouchEvent) {
+    if (!touchTimer) return;
+    const touch = e.touches[0];
+    const dx = Math.abs(touch.clientX - touchStartPos.x);
+    const dy = Math.abs(touch.clientY - touchStartPos.y);
+    if (dx > 10 || dy > 10) {
+      touchMoved = true;
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+  }
+
+  function handleMessageTouchEnd() {
+    if (touchTimer) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+  }
+
   function handleMessageContextMenu(e: MouseEvent, msg: Message) {
     e.preventDefault();
     e.stopPropagation();
@@ -487,6 +535,10 @@
           class:my-message={isMe}
           role="article"
           oncontextmenu={(e) => handleMessageContextMenu(e, msg)}
+          ontouchstart={(e) => handleMessageTouchStart(e, msg)}
+          ontouchmove={handleMessageTouchMove}
+          ontouchend={handleMessageTouchEnd}
+          ontouchcancel={handleMessageTouchEnd}
         >
           <div class="message-avatar-wrap">
             <Avatar
