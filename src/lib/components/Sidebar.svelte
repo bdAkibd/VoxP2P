@@ -480,8 +480,8 @@
 
 <style>
   .sidebar {
-    width: 280px;
-    min-width: 280px;
+    width: 320px;
+    min-width: 320px;
     height: 100vh;
     background-color: var(--bg-secondary);
     border-right: var(--border-width) solid var(--border-color);
@@ -645,6 +645,7 @@
   }
 
   .sidebar-input {
+    min-width: 0;
     flex: 1;
     background: var(--bg-primary);
     border: var(--border-width) solid var(--border-color);
@@ -664,10 +665,13 @@
     color: #ffffff;
     border: none;
     border-radius: var(--border-radius);
-    padding: 6px 12px;
+    padding: 7px 14px;
     font-size: 0.82rem;
     font-weight: 600;
     cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: max-content;
   }
 
   .sidebar-action-btn:hover {
@@ -784,9 +788,13 @@
   }
 
   .contact-id {
+    display: block;
     font-size: 0.72rem;
     color: var(--text-muted);
     font-family: monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .quick-call-btn {

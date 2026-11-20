@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "VoxP2P",
-        "width": 960,
-        "height": 680,
-        "minWidth": 640,
-        "minHeight": 480
+        "width": 1280,
+        "height": 800,
+        "minWidth": 840,
+        "minHeight": 560
       }
     ],
     "security": {

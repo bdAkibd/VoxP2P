@@ -558,6 +558,19 @@
       syncLoading = false;
     }
   }
+
+  function getActiveTabTitle(tab: typeof activeTab): string {
+    switch (tab) {
+      case "account": return t("settings.tabAccount");
+      case "audio": return t("settings.tabAudio");
+      case "network": return t("settings.tabNetwork");
+      case "theme": return t("settings.tabTheme");
+      case "sync": return t("settings.tabSync");
+      case "language": return t("settings.tabLanguage");
+      case "guide": return t("settings.tabGuide");
+      default: return t("settings.title");
+    }
+  }
 </script>
 
 <div
@@ -569,64 +582,93 @@
   tabindex="-1"
 >
   <div class="settings-dialog" role="document">
-    <!-- Dialog Header -->
-    <div class="dialog-header">
-      <div class="tabs-row">
+    <!-- Left Navigation Column -->
+    <aside class="settings-nav">
+      <div class="settings-nav-header">
+        <span class="settings-nav-title">{t("settings.title")}</span>
+      </div>
+      <div class="nav-tabs-list" role="tablist">
         <button
-          class="tab-btn"
+          class="nav-tab-btn"
           class:active={activeTab === "account"}
           onclick={() => (activeTab = "account")}
+          role="tab"
+          aria-selected={activeTab === "account"}
         >
           {t("settings.tabAccount")}
         </button>
         <button
-          class="tab-btn"
+          class="nav-tab-btn"
           class:active={activeTab === "audio"}
           onclick={() => (activeTab = "audio")}
+          role="tab"
+          aria-selected={activeTab === "audio"}
         >
           {t("settings.tabAudio")}
         </button>
         <button
-          class="tab-btn"
+          class="nav-tab-btn"
           class:active={activeTab === "network"}
           onclick={() => (activeTab = "network")}
+          role="tab"
+          aria-selected={activeTab === "network"}
         >
           {t("settings.tabNetwork")}
         </button>
         <button
-          class="tab-btn"
+          class="nav-tab-btn"
           class:active={activeTab === "theme"}
           onclick={() => (activeTab = "theme")}
+          role="tab"
+          aria-selected={activeTab === "theme"}
         >
           {t("settings.tabTheme")}
         </button>
         <button
-          class="tab-btn"
+          class="nav-tab-btn"
           class:active={activeTab === "sync"}
           onclick={() => (activeTab = "sync")}
+          role="tab"
+          aria-selected={activeTab === "sync"}
         >
           {t("settings.tabSync")}
         </button>
         <button
-          class="tab-btn"
+          class="nav-tab-btn"
           class:active={activeTab === "language"}
           onclick={() => (activeTab = "language")}
+          role="tab"
+          aria-selected={activeTab === "language"}
         >
           {t("settings.tabLanguage")}
         </button>
         <button
-          class="tab-btn"
+          class="nav-tab-btn"
           class:active={activeTab === "guide"}
           onclick={() => (activeTab = "guide")}
+          role="tab"
+          aria-selected={activeTab === "guide"}
         >
           {t("settings.tabGuide")}
         </button>
       </div>
-      <button class="dialog-close-btn" onclick={handleModalClose}>&times;</button>
-    </div>
+    </aside>
 
-    <!-- Dialog Content Body -->
-    <div class="dialog-body">
+    <!-- Right Main Content Column -->
+    <main class="settings-main">
+      <div class="settings-main-header">
+        <h3 class="active-tab-title">{getActiveTabTitle(activeTab)}</h3>
+        <button
+          class="dialog-close-btn"
+          onclick={handleModalClose}
+          aria-label={t("common.close") || "Close"}
+          title={t("common.close") || "Close"}
+        >
+          &times;
+        </button>
+      </div>
+
+      <div class="settings-content-body">
       {#if activeTab === "account"}
         <div class="settings-group">
           <h4>{t("settings.accountTitle")}</h4>
@@ -1202,7 +1244,8 @@
       {:else if activeTab === "guide"}
         <UserManual onNavigateTab={(tab) => activeTab = tab} />
       {/if}
-    </div>
+      </div>
+    </main>
   </div>
 </div>
 
@@ -1482,13 +1525,140 @@
     background: var(--bg-primary);
     border: var(--border-width) solid var(--border-color);
     border-radius: var(--border-radius);
-    width: 680px;
-    max-width: 92vw;
+    width: 1040px;
+    max-width: 94vw;
+    height: 760px;
     max-height: 88vh;
+    display: flex;
+    flex-direction: row;
+    overflow: hidden;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  }
+
+  .settings-nav {
+    width: 250px;
+    min-width: 250px;
+    background: var(--bg-secondary);
+    border-right: var(--border-width) solid var(--border-color);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    flex-shrink: 0;
+  }
+
+  .settings-nav-header {
+    padding: 20px 20px 14px;
+    border-bottom: var(--border-width) solid var(--border-color);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .settings-nav-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+  }
+
+  .nav-tabs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .nav-tab-btn {
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    white-space: nowrap;
+    padding: 10px 14px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    border-radius: var(--border-radius);
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    box-sizing: border-box;
+  }
+
+  .nav-tab-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
+
+  .nav-tab-btn.active {
+    color: #ffffff;
+    background: var(--accent-primary);
+    font-weight: 600;
+  }
+
+  .settings-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-primary);
+  }
+
+  .settings-main-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 32px;
+    border-bottom: var(--border-width) solid var(--border-color);
+    background: var(--bg-primary);
+    flex-shrink: 0;
+  }
+
+  .active-tab-title {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .dialog-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 6px 10px;
+    border-radius: var(--border-radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+
+  .dialog-close-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
+
+  .settings-content-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
   }
 
   @media (max-width: 768px) {
@@ -1499,18 +1669,47 @@
       max-height: 100vh;
       border-radius: 0;
       border: none;
+      flex-direction: column;
     }
 
-    .tabs-row {
+    .settings-nav {
+      width: 100%;
+      min-width: 0;
+      border-right: none;
+      border-bottom: var(--border-width) solid var(--border-color);
+      flex-shrink: 0;
+    }
+
+    .settings-nav-header {
+      padding: 10px 14px 6px;
+      border-bottom: none;
+    }
+
+    .settings-nav-title {
+      font-size: 0.95rem;
+    }
+
+    .nav-tabs-list {
+      flex-direction: row;
       overflow-x: auto;
-      padding-bottom: 4px;
+      padding: 4px 10px 8px;
+      gap: 6px;
       -webkit-overflow-scrolling: touch;
     }
 
-    .tab-btn {
-      white-space: nowrap;
-      padding: 8px 10px;
-      font-size: 0.8rem;
+    .nav-tab-btn {
+      width: auto;
+      flex-shrink: 0;
+      padding: 7px 12px;
+      font-size: 0.82rem;
+    }
+
+    .settings-main-header {
+      padding: 12px 16px;
+    }
+
+    .active-tab-title {
+      font-size: 1rem;
     }
 
     .dialog-close-btn {
@@ -1521,66 +1720,10 @@
       justify-content: center;
     }
 
-    .dialog-body {
+    .settings-content-body {
       padding: 16px;
+      gap: 16px;
     }
-  }
-
-  .dialog-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px 18px;
-    background: var(--bg-secondary);
-    border-bottom: var(--border-width) solid var(--border-color);
-  }
-
-  .tabs-row {
-    display: flex;
-    gap: 8px;
-  }
-
-  .tab-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    font-weight: 600;
-    font-size: 0.88rem;
-    padding: 8px 14px;
-    border-radius: var(--border-radius);
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .tab-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-tertiary);
-  }
-
-  .tab-btn.active {
-    color: #ffffff;
-    background: var(--accent-primary);
-  }
-
-  .dialog-close-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    font-size: 1.5rem;
-    cursor: pointer;
-    line-height: 1;
-  }
-
-  .dialog-close-btn:hover {
-    color: var(--text-primary);
-  }
-
-  .dialog-body {
-    padding: 22px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
   }
 
   .settings-group {
@@ -1623,12 +1766,15 @@
   }
 
   .settings-select {
+    width: 100%;
+    box-sizing: border-box;
     background: var(--bg-primary);
     border: var(--border-width) solid var(--border-color);
     border-radius: var(--border-radius);
     padding: 8px 12px;
     color: var(--text-primary);
     font-size: 0.85rem;
+    text-overflow: ellipsis;
   }
 
   .settings-select:focus {

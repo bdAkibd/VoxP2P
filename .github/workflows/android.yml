@@ -91,7 +91,7 @@ jobs:
 
       - name: Initialize Android project if needed
         run: |
-          # Backup custom manifest and kotlin services before any init
+          # Backup custom manifest, resources and kotlin services before any init
           mkdir -p /tmp/voxp2p_android_backup
           if [ -d src-tauri/gen/android ]; then
             cp -r src-tauri/gen/android/* /tmp/voxp2p_android_backup/ 2>/dev/null || true
@@ -102,9 +102,48 @@ jobs:
             npx tauri android init --skip-targets-install --ci
           fi
 
-          # Restore custom manifest and kotlin services
+          # Restore custom manifest, resources and kotlin services
           if [ -d /tmp/voxp2p_android_backup ]; then
             cp -rf /tmp/voxp2p_android_backup/* src-tauri/gen/android/ 2>/dev/null || true
+          fi
+
+          # Ensure AppCompat theme definitions exist in res/values and res/values-night
+          mkdir -p src-tauri/gen/android/app/src/main/res/values
+          mkdir -p src-tauri/gen/android/app/src/main/res/values-night
+
+          cat << 'EOF' > src-tauri/gen/android/app/src/main/res/values/themes.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources xmlns:tools="http://schemas.android.com/tools">
+              <style name="Theme.VoxP2P" parent="Theme.AppCompat.DayNight.NoActionBar">
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="windowActionBar">false</item>
+                  <item name="android:windowFullscreen">false</item>
+                  <item name="android:windowContentOverlay">@null</item>
+              </style>
+              <style name="Theme.voxp2p" parent="Theme.VoxP2P" />
+              <style name="Theme.vox_p2p" parent="Theme.VoxP2P" />
+          </resources>
+          EOF
+
+          cat << 'EOF' > src-tauri/gen/android/app/src/main/res/values-night/themes.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources xmlns:tools="http://schemas.android.com/tools">
+              <style name="Theme.VoxP2P" parent="Theme.AppCompat.DayNight.NoActionBar">
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="windowActionBar">false</item>
+                  <item name="android:windowFullscreen">false</item>
+                  <item name="android:windowContentOverlay">@null</item>
+              </style>
+              <style name="Theme.voxp2p" parent="Theme.VoxP2P" />
+              <style name="Theme.vox_p2p" parent="Theme.VoxP2P" />
+          </resources>
+          EOF
+
+          # Ensure AndroidManifest.xml has android:theme configured
+          MANIFEST_PATH="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_PATH" ] && ! grep -q "android:theme" "$MANIFEST_PATH"; then
+            echo "Injecting android:theme into AndroidManifest.xml..."
+            sed -i 's/<application/<application\n        android:theme="@style\/Theme.VoxP2P"/' "$MANIFEST_PATH"
           fi
 
           # Ensure minSdk is 29 (Android 10+) and targetSdk/compileSdk are 34 in all Gradle files

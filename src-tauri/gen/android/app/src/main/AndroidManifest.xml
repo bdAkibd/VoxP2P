@@ -24,11 +24,13 @@
     <application
         android:label="VoxP2P"
         android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.VoxP2P"
         android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="VoxP2P"
+            android:theme="@style/Theme.VoxP2P"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">

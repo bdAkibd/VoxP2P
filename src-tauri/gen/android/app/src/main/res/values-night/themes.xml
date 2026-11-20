@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base dark application theme inheriting from AppCompat DayNight NoActionBar -->
+    <style name="Theme.VoxP2P" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="windowActionBar">false</item>
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+
+    <!-- Aliases for Tauri naming conventions -->
+    <style name="Theme.voxp2p" parent="Theme.VoxP2P" />
+    <style name="Theme.vox_p2p" parent="Theme.VoxP2P" />
+</resources>
