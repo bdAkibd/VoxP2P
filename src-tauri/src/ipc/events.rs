@@ -19,6 +19,7 @@ pub const EVENT_HOST_CHANGED: &str = "room://host-changed";
 pub const EVENT_PEERS_UPDATED: &str = "room://peers-updated";
 pub const EVENT_SYNC_HOST_COMPLETED: &str = "sync://host-completed";
 pub const EVENT_SYNC_IMPORT_COMPLETED: &str = "sync://import-completed";
+pub const EVENT_NODE_STATUS_CHANGED: &str = "node://status-changed";
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,4 +106,36 @@ pub struct SyncImportCompletedPayload {
     pub nickname: String,
     pub contacts_imported: usize,
     pub messages_imported: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayStatusInfo {
+    pub url: String,
+    pub is_connected: bool,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeNetworkStatus {
+    pub status: String,
+    pub is_online: bool,
+    pub relay_connected: bool,
+    pub home_relay_url: Option<String>,
+    pub direct_addrs: Vec<String>,
+    pub relays: Vec<RelayStatusInfo>,
+    pub last_error: Option<String>,
+}
+
+impl Default for NodeNetworkStatus {
+    fn default() -> Self {
+        Self {
+            status: "Stopped".to_string(),
+            is_online: false,
+            relay_connected: false,
+            home_relay_url: None,
+            direct_addrs: Vec::new(),
+            relays: Vec::new(),
+            last_error: None,
+        }
+    }
 }

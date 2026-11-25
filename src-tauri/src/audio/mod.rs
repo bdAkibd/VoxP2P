@@ -124,21 +124,70 @@ impl AudioManager {
         if self.is_running.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
+        eprintln!("[VoxP2P] Starting AudioManager");
 
         // Attempt to start hardware capture if an input device exists
         if let Ok(mut cap) = self.capture.lock() {
-            let _ = cap.start(None); // Ok to fail gracefully if no physical mic
+            if let Err(e) = cap.start(None) {
+                eprintln!("[VoxP2P] Audio capture initial start skipped/failed: {e}");
+            } else {
+                eprintln!("[VoxP2P] Audio capture stream started");
+            }
         }
 
         // Attempt to start hardware playback if an output device exists
         if let Ok(mut play) = self.playback.lock() {
-            let _ = play.start(None); // Ok to fail gracefully if no physical speaker
+            if let Err(e) = play.start(None) {
+                eprintln!("[VoxP2P] Audio playback initial start skipped/failed: {e}");
+            } else {
+                eprintln!("[VoxP2P] Audio playback stream started");
+            }
         }
 
         // Launch throttled 50ms volume levels emission task
         self.levels_cancel.store(false, Ordering::Release);
         self.spawn_levels_task();
         self.spawn_local_level_task();
+
+        Ok(())
+    }
+
+    /// Safely starts or restarts capture/playback streams if they are not currently running
+    /// (e.g., after Android runtime RECORD_AUDIO permission is granted post-startup).
+    pub fn ensure_streams_started(self: &Arc<Self>) -> Result<(), String> {
+        if !self.is_running.load(Ordering::Acquire) {
+            return self.start();
+        }
+
+        if let Ok(mut cap) = self.capture.lock() {
+            if !cap.is_running() {
+                let dev = cap
+                    .config
+                    .read()
+                    .ok()
+                    .and_then(|c| c.device_id.clone());
+                if let Err(e) = cap.start(dev.as_deref()) {
+                    eprintln!("[VoxP2P] Audio capture reinit skipped/failed: {e}");
+                } else {
+                    eprintln!("[VoxP2P] Audio capture stream reinitialized");
+                }
+            }
+        }
+
+        if let Ok(mut play) = self.playback.lock() {
+            if !play.is_running() {
+                let dev = play
+                    .config
+                    .read()
+                    .ok()
+                    .and_then(|c| c.device_id.clone());
+                if let Err(e) = play.start(dev.as_deref()) {
+                    eprintln!("[VoxP2P] Audio playback reinit skipped/failed: {e}");
+                } else {
+                    eprintln!("[VoxP2P] Audio playback stream reinitialized");
+                }
+            }
+        }
 
         Ok(())
     }
@@ -243,6 +292,7 @@ impl AudioManager {
 
 
     pub fn stop(&self) {
+        eprintln!("[VoxP2P] Stopping AudioManager");
         self.is_running.store(false, Ordering::Release);
         self.levels_cancel.store(true, Ordering::Release);
 
@@ -259,6 +309,9 @@ impl AudioManager {
             .capture
             .lock()
             .map_err(|e| format!("Capture lock poisoned: {e}"))?;
+        if let Ok(mut conf) = cap.config.write() {
+            conf.device_id = name.map(|s| s.to_string());
+        }
         cap.stop();
         cap.start(name)
     }
@@ -268,6 +321,9 @@ impl AudioManager {
             .playback
             .lock()
             .map_err(|e| format!("Playback lock poisoned: {e}"))?;
+        if let Ok(mut conf) = play.config.write() {
+            conf.device_id = name.map(|s| s.to_string());
+        }
         play.stop();
         play.start(name)
     }

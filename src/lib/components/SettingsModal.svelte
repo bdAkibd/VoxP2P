@@ -69,16 +69,56 @@
     fileInputEl?.click();
   }
 
-  function handleFileSelected(e: Event) {
+  async function handleFileSelected(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
     const file = input.files[0];
-    const reader = new FileReader();
-    reader.onload = () => {
-      cropperImageSrc = reader.result as string;
-      input.value = "";
-    };
-    reader.readAsDataURL(file);
+    input.value = "";
+    profileError = null;
+
+    const MAX_AVATAR_FILE_BYTES = 50 * 1024 * 1024;
+    const MAX_AVATAR_SOURCE_DIM = 1280;
+
+    if (file.size > MAX_AVATAR_FILE_BYTES) {
+      profileError = "Image file is too large (max 50 MB)";
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error("Failed to decode selected image"));
+        el.src = objectUrl;
+      });
+
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) {
+        throw new Error("Invalid image dimensions");
+      }
+
+      const maxDim = Math.max(w, h);
+      const scale = maxDim > MAX_AVATAR_SOURCE_DIM ? MAX_AVATAR_SOURCE_DIM / maxDim : 1;
+      const targetW = Math.max(1, Math.round(w * scale));
+      const targetH = Math.max(1, Math.round(h * scale));
+
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Canvas 2D context unavailable");
+      }
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      cropperImageSrc = canvas.toDataURL("image/png");
+    } catch (err: any) {
+      console.error("[VoxP2P] Avatar image processing failed:", err);
+      profileError = err?.message || "Failed to process selected image";
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
   }
 
   async function handleCropperApply(bytes: Uint8Array) {
@@ -373,6 +413,7 @@
   async function handleScanQrWithCamera() {
     qrImportError = null;
     try {
+      let scannerAvailable = true;
       try {
         let perm = await checkPermissions();
         if (perm !== "granted") {
@@ -383,24 +424,57 @@
           return;
         }
       } catch (permErr) {
-        console.warn("Could not check/request barcode scanner permissions:", permErr);
+        const msg = String(permErr || "");
+        if (/not implemented|not supported|unknown command|not found/i.test(msg)) {
+          scannerAvailable = false;
+        } else {
+          console.warn("Could not check/request barcode scanner permissions:", permErr);
+        }
       }
 
-      const scanned = await scan({
-        formats: [Format.QRCode],
-        cameraDirection: "back",
-        windowed: false,
-      });
-      if (scanned && scanned.content) {
-        qrImportInput = scanned.content;
-        await handleImportQr(scanned.content);
+      if (scannerAvailable) {
+        const scanned = await scan({
+          formats: [Format.QRCode],
+          cameraDirection: "back",
+          windowed: false,
+        });
+        if (scanned && scanned.content) {
+          qrImportInput = scanned.content;
+          await handleImportQr(scanned.content);
+        }
+        // If scanned is empty/null, the user cancelled or closed the native scanner.
         return;
       }
     } catch (err: any) {
+      const msg = String(err?.message || err || "");
+      if (/cancel|dismiss|abort/i.test(msg)) {
+        // User cancelled the native barcode scanner — exit cleanly without fallback or error.
+        return;
+      }
       console.warn("Tauri barcode scanner unavailable or failed, falling back to camera stream:", err);
     }
 
     // Graceful Web/HTML5 camera stream fallback
+    const BarcodeDetectorClass = (window as any).BarcodeDetector;
+    if (typeof BarcodeDetectorClass !== "function") {
+      qrImportError =
+        "Сканирование QR-кода через камеру не поддерживается в этом браузере/WebView (отсутствует BarcodeDetector). Пожалуйста, вставьте sync-тикет вручную ниже.";
+      return;
+    }
+
+    if (typeof BarcodeDetectorClass.getSupportedFormats === "function") {
+      try {
+        const supported: string[] = await BarcodeDetectorClass.getSupportedFormats();
+        if (Array.isArray(supported) && !supported.includes("qr_code")) {
+          qrImportError =
+            "Встроенный BarcodeDetector не поддерживает формат QR-кодов. Пожалуйста, вставьте sync-тикет вручную ниже.";
+          return;
+        }
+      } catch {
+        // Proceed and let constructor validate
+      }
+    }
+
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         isScanningCamera = true;
@@ -408,17 +482,25 @@
           video: { facingMode: "environment" },
         });
         setTimeout(async () => {
-          if (cameraVideoEl && cameraStream) {
+          if (!cameraVideoEl || !cameraStream) {
+            stopCamera();
+            return;
+          }
+          try {
             cameraVideoEl.srcObject = cameraStream;
-            await cameraVideoEl.play().catch(console.error);
+            await cameraVideoEl.play();
             startVideoQrDetector();
+          } catch (playErr: any) {
+            stopCamera();
+            qrImportError =
+              "Не удалось запустить видеопоток камеры: " + (playErr?.message || playErr);
           }
         }, 50);
       } else {
         qrImportError = "Camera not supported on this platform. Please paste the sync ticket manually below.";
       }
     } catch (camErr: any) {
-      isScanningCamera = false;
+      stopCamera();
       qrImportError = "Unable to access camera: " + (camErr?.message || camErr) + ". Please paste ticket manually.";
     }
   }
@@ -438,25 +520,39 @@
   function startVideoQrDetector() {
     if (cameraScanInterval) clearInterval(cameraScanInterval);
     const BarcodeDetectorClass = (window as any).BarcodeDetector;
-    if (BarcodeDetectorClass) {
-      const detector = new BarcodeDetectorClass({ formats: ["qr_code"] });
-      cameraScanInterval = setInterval(async () => {
-        if (!cameraVideoEl || cameraVideoEl.readyState < 2) return;
-        try {
-          const barcodes = await detector.detect(cameraVideoEl);
-          if (barcodes && barcodes.length > 0) {
-            const content = barcodes[0].rawValue;
-            if (content && content.startsWith("p2psync://")) {
-              stopCamera();
-              qrImportInput = content;
-              await handleImportQr(content);
-            }
-          }
-        } catch {
-          // Continue detection loop
-        }
-      }, 300);
+    if (typeof BarcodeDetectorClass !== "function") {
+      stopCamera();
+      qrImportError =
+        "Сканирование QR-кода через камеру не поддерживается (отсутствует BarcodeDetector). Пожалуйста, вставьте sync-тикет вручную ниже.";
+      return;
     }
+
+    let detector: any;
+    try {
+      detector = new BarcodeDetectorClass({ formats: ["qr_code"] });
+    } catch (err: any) {
+      stopCamera();
+      qrImportError =
+        "Не удалось инициализировать BarcodeDetector: " + (err?.message || err);
+      return;
+    }
+
+    cameraScanInterval = setInterval(async () => {
+      if (!cameraVideoEl || cameraVideoEl.readyState < 2) return;
+      try {
+        const barcodes = await detector.detect(cameraVideoEl);
+        if (barcodes && barcodes.length > 0) {
+          const content = barcodes[0].rawValue;
+          if (content && content.startsWith("p2psync://")) {
+            stopCamera();
+            qrImportInput = content;
+            await handleImportQr(content);
+          }
+        }
+      } catch {
+        // Continue detection loop
+      }
+    }, 300);
   }
 
   async function handlePasteTicket() {
@@ -471,9 +567,17 @@
   }
 
   async function handleToggleMicTest() {
-    isTestingMic = !isTestingMic;
+    const nextState = !isTestingMic;
+    isTestingMic = nextState;
     try {
-      await api.setMicTest(isTestingMic);
+      if (nextState) {
+        const granted = await api.requestMicPermission();
+        if (!granted) {
+          isTestingMic = false;
+          return;
+        }
+      }
+      await api.setMicTest(nextState);
     } catch (err) {
       console.error("Failed to toggle mic test:", err);
       isTestingMic = false;

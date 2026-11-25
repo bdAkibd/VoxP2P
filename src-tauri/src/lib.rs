@@ -89,13 +89,17 @@ use audio::AudioManager;
 use ipc::commands::{
     add_contact,
     attach_file,
+    attach_file_bytes,
     delete_contact,
     delete_message,
     download_attachment,
     edit_message,
+    ensure_audio_started,
+    get_attachment_preview,
     get_contacts,
     get_messages,
     get_my_profile,
+    get_network_status,
     get_node_status,
     get_room_state,
     get_room_ticket,
@@ -108,6 +112,7 @@ use ipc::commands::{
     list_audio_devices,
     list_audio_input_devices,
     list_audio_output_devices,
+    request_mic_permission,
     save_theme,
     send_direct_message,
     send_message,
@@ -145,6 +150,11 @@ use storage::db::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("[VoxP2P][PANIC] {panic_info}");
+    }));
+    eprintln!("[VoxP2P] Starting VoxP2P runtime");
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init());
 
@@ -175,6 +185,7 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             std::fs::create_dir_all(&app_data_dir).ok();
+            eprintln!("[VoxP2P] Setup initialized with app_data_dir={}", app_data_dir.display());
 
             let db_path = app_data_dir.join("voxp2p.db");
             let db_key = Database::get_or_create_db_key(&app_data_dir);
@@ -214,76 +225,18 @@ pub fn run() {
                 Some(app.handle().clone()),
             );
 
-            // Register DM handler on node manager
-            let dm_handler = ft_manager.create_dm_handler();
-            let nm_dm = node_manager.clone();
-            tauri::async_runtime::spawn(async move {
-                nm_dm.set_dm_handler(dm_handler).await;
-            });
+            let (_, initial_node_id) = node_manager.get_identity_sync();
+            ft_manager.set_local_node_id_sync(&initial_node_id);
+            audio_manager.set_local_node_id(&initial_node_id);
 
-            // Register Audio handler on node manager
-            let audio_handler = room_manager.create_audio_handler();
-            let nm_audio_h = node_manager.clone();
-            tauri::async_runtime::spawn(async move {
-                nm_audio_h.set_audio_handler(audio_handler).await;
-            });
-
-            // Provide audio_manager to room_manager
-            let rm_audio = room_manager.clone();
-            let am_ref = audio_manager.clone();
-            tauri::async_runtime::spawn(async move {
-                rm_audio.set_audio_manager(am_ref).await;
-            });
-
-            // Wire avatar handshake caching to room manager
-            let rm_avatar = room_manager.clone();
-            let ft_avatar = ft_manager.clone();
-            tauri::async_runtime::spawn(async move {
-                rm_avatar
-                    .set_avatar_cb(Arc::new(move |peer_id, hash| {
-                        let ft = ft_avatar.clone();
-                        let pid = peer_id.to_string();
-                        let h = hash.to_string();
-                        tauri::async_runtime::spawn(async move {
-                            ft.handle_avatar_handshake(&pid, &h).await;
-                        });
-                    }))
-                    .await;
-            });
-
-            let nm_clone = node_manager.clone();
-            let ft_clone = ft_manager.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = nm_clone.start().await {
-                    eprintln!("Warning: Background P2P node start failed: {e}");
-                } else if let (Some(ep), Some(store)) = (nm_clone.get_endpoint().await, nm_clone.get_blobs_store().await) {
-                    let node_id = nm_clone.get_node_id().await;
-                    ft_clone.set_endpoint_and_store(ep, store, node_id).await;
-                }
-            });
-
-            let am_clone = audio_manager.clone();
-            let nm_audio = node_manager.clone();
-            tauri::async_runtime::spawn(async move {
-                let node_id = nm_audio.get_node_id().await;
-                am_clone.set_local_node_id(&node_id);
-                if let Err(e) = am_clone.start() {
-                    eprintln!("Warning: Audio pipeline start failed: {e}");
-                }
-            });
-
-            // Load saved settings and apply bypass_vpn to NodeManager, and rnnoise/devices/vad to AudioManager
+            // Load saved settings before starting network/audio pipelines
+            let mut bypass_vpn_setting: Option<bool> = None;
             if let Ok(settings) = db.get_all_settings() {
                 if let Some(val) = settings.get("bypass_vpn") {
-                    let bypass = val == "true";
-                    let nm = node_manager.clone();
-                    tauri::async_runtime::spawn(async move {
-                        nm.set_bypass_vpn(bypass).await;
-                    });
+                    bypass_vpn_setting = Some(val == "true");
                 }
                 if let Some(val) = settings.get("rnnoise_enabled") {
-                    let enabled = val == "true";
-                    audio_manager.set_rnnoise(enabled);
+                    audio_manager.set_rnnoise(val == "true");
                 }
                 if let Some(val) = settings.get("vad_threshold") {
                     if let Ok(thresh) = val.parse::<f32>() {
@@ -302,8 +255,55 @@ pub fn run() {
                 }
             }
 
-            // Start offline queue watcher to automatically flush pending DMs when contacts connect
-            ft_manager.start_offline_queue_watcher();
+            if let Err(e) = audio_manager.start() {
+                eprintln!("[VoxP2P] Warning: Audio pipeline start failed: {e}");
+            } else {
+                eprintln!("[VoxP2P] Audio pipeline started");
+            }
+
+            let dm_handler = ft_manager.create_dm_handler();
+            let audio_handler = room_manager.create_audio_handler();
+
+            let nm_clone = node_manager.clone();
+            let ft_clone = ft_manager.clone();
+            let rm_clone = room_manager.clone();
+            let am_clone = audio_manager.clone();
+            let app_handle_for_node = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                nm_clone.set_app_handle(app_handle_for_node).await;
+                ft_clone.set_memory_lookup(nm_clone.get_memory_lookup().await).await;
+                if let Some(bypass) = bypass_vpn_setting {
+                    nm_clone.set_bypass_vpn(bypass).await;
+                }
+                rm_clone.set_audio_manager(am_clone).await;
+                {
+                    let ft_avatar = ft_clone.clone();
+                    rm_clone
+                        .set_avatar_cb(Arc::new(move |peer_id, hash| {
+                            let ft = ft_avatar.clone();
+                            let pid = peer_id.to_string();
+                            let h = hash.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                ft.handle_avatar_handshake(&pid, &h).await;
+                            });
+                        }))
+                        .await;
+                }
+
+                // Register DM and Audio handlers BEFORE starting NodeManager/Router
+                if let Err(e) = nm_clone.start_with_handlers(dm_handler, audio_handler).await {
+                    eprintln!("[VoxP2P] Warning: Background P2P node start failed: {e}");
+                } else if let (Some(ep), Some(store)) = (
+                    nm_clone.get_endpoint().await,
+                    nm_clone.get_blobs_store().await,
+                ) {
+                    let node_id = nm_clone.get_node_id().await;
+                    eprintln!("[VoxP2P] Background P2P node started (node_id={node_id})");
+                    ft_clone.set_endpoint_and_store(ep, store, node_id).await;
+                    // Start outbox watcher only after endpoint, blobs_store, and real local_node_id are ready
+                    ft_clone.start_offline_queue_watcher();
+                }
+            });
 
             let sync_manager = DeviceSyncManager::new(
                 node_manager.clone(),
@@ -336,6 +336,7 @@ pub fn run() {
             update_profile,
             add_contact,
             get_node_status,
+            get_network_status,
             get_contacts,
             get_undelivered_messages,
             list_audio_devices,
@@ -358,7 +359,9 @@ pub fn run() {
             leave_room,
             start_direct_call,
             attach_file,
+            attach_file_bytes,
             download_attachment,
+            get_attachment_preview,
             send_room_message,
             send_direct_message,
             send_message,
@@ -379,7 +382,9 @@ pub fn run() {
             delete_message,
             delete_contact,
             start_call_foreground_service,
-            stop_call_foreground_service
+            stop_call_foreground_service,
+            ensure_audio_started,
+            request_mic_permission
         ])
 
         .run(tauri::generate_context!())

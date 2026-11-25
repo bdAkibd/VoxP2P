@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tauri::State;
 use crate::audio::{AudioDeviceInfo, AudioDevicesResponse, AudioManager};
@@ -6,7 +7,8 @@ use crate::network::device_sync::{
     DeviceSyncImportResult, DeviceSyncManager, DeviceSyncTicketPayload,
 };
 use crate::network::file_transfer::{
-    AttachFileResponse, DeviceSyncTicket, FileTransferManager, ImportSyncResult,
+    AttachFileResponse, DeviceSyncTicket, DownloadAttachmentResult, FileTransferManager,
+    ImportSyncResult,
 };
 use crate::network::node::{NodeManager, NodeStatus, UserProfile};
 use crate::network::room::{RoomGossipMessage, RoomManager, RoomState};
@@ -98,6 +100,13 @@ pub async fn get_node_status(node_manager: State<'_, NodeManager>) -> Result<Nod
 }
 
 #[tauri::command]
+pub async fn get_network_status(
+    node_manager: State<'_, NodeManager>,
+) -> Result<crate::ipc::events::NodeNetworkStatus, String> {
+    Ok(node_manager.get_network_status().await)
+}
+
+#[tauri::command]
 pub fn get_contacts(db: State<'_, Database>) -> Result<Vec<Contact>, String> {
     db.get_contacts().map_err(|e| e.to_string())
 }
@@ -111,50 +120,95 @@ pub fn get_undelivered_messages(
 }
 
 #[tauri::command]
-pub fn list_audio_devices(
+pub async fn list_audio_devices(
     audio_manager: State<'_, Arc<AudioManager>>,
 ) -> Result<AudioDevicesResponse, String> {
-    Ok(audio_manager.list_devices())
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || am.list_devices())
+        .await
+        .map_err(|e| format!("Failed to list audio devices: {e}"))
 }
 
 #[tauri::command]
-pub fn list_audio_input_devices(
+pub async fn list_audio_input_devices(
     audio_manager: State<'_, Arc<AudioManager>>,
 ) -> Result<Vec<AudioDeviceInfo>, String> {
-    Ok(audio_manager.list_devices().input_devices)
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || am.list_devices().input_devices)
+        .await
+        .map_err(|e| format!("Failed to list input devices: {e}"))
 }
 
 #[tauri::command]
-pub fn list_audio_output_devices(
+pub async fn list_audio_output_devices(
     audio_manager: State<'_, Arc<AudioManager>>,
 ) -> Result<Vec<AudioDeviceInfo>, String> {
-    Ok(audio_manager.list_devices().output_devices)
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || am.list_devices().output_devices)
+        .await
+        .map_err(|e| format!("Failed to list output devices: {e}"))
 }
 
 #[tauri::command]
-pub fn set_input_device(
+pub async fn set_input_device(
     name: String,
     audio_manager: State<'_, Arc<AudioManager>>,
 ) -> Result<(), String> {
-    let dev = if name.is_empty() || name == "default" {
-        None
-    } else {
-        Some(name.as_str())
-    };
-    audio_manager.set_input_device(dev)
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dev = if name.is_empty() || name == "default" {
+            None
+        } else {
+            Some(name.as_str())
+        };
+        am.set_input_device(dev)
+    })
+    .await
+    .map_err(|e| format!("Failed to set input device: {e}"))?
 }
 
 #[tauri::command]
-pub fn set_output_device(
+pub async fn set_output_device(
     name: String,
     audio_manager: State<'_, Arc<AudioManager>>,
 ) -> Result<(), String> {
-    let dev = if name.is_empty() || name == "default" {
-        None
-    } else {
-        Some(name.as_str())
-    };
-    audio_manager.set_output_device(dev)
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dev = if name.is_empty() || name == "default" {
+            None
+        } else {
+            Some(name.as_str())
+        };
+        am.set_output_device(dev)
+    })
+    .await
+    .map_err(|e| format!("Failed to set output device: {e}"))?
+}
+
+#[tauri::command]
+pub async fn ensure_audio_started(
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || am.ensure_streams_started())
+        .await
+        .map_err(|e| format!("Failed to reinitialize audio streams: {e}"))?
+}
+
+#[tauri::command]
+pub async fn request_mic_permission(
+    audio_manager: State<'_, Arc<AudioManager>>,
+) -> Result<bool, String> {
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let granted = crate::network::mobile_service::request_android_mic_permission();
+        if granted {
+            let _ = am.ensure_streams_started();
+        }
+        granted
+    })
+    .await
+    .map_err(|e| format!("Failed to request microphone permission: {e}"))
 }
 
 #[tauri::command]
@@ -212,20 +266,30 @@ pub fn set_master_volume(
 }
 
 #[tauri::command]
-pub fn set_mic_test(
+pub async fn set_mic_test(
     enabled: bool,
     audio_manager: State<'_, Arc<AudioManager>>,
 ) -> Result<(), String> {
-    audio_manager.set_mic_test(enabled);
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        am.set_mic_test(enabled);
+    })
+    .await
+    .map_err(|e| format!("Failed to toggle mic test: {e}"))?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_meter_active(
+pub async fn set_meter_active(
     active: bool,
     audio_manager: State<'_, Arc<AudioManager>>,
 ) -> Result<(), String> {
-    audio_manager.set_meter_active(active);
+    let am = audio_manager.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        am.set_meter_active(active);
+    })
+    .await
+    .map_err(|e| format!("Failed to set meter active: {e}"))?;
     Ok(())
 }
 
@@ -380,17 +444,12 @@ pub async fn leave_room(room_manager: State<'_, RoomManager>) -> Result<(), Stri
     Ok(())
 }
 
-#[tauri::command]
-pub async fn attach_file(
-    file_path: String,
-    chat_id: Option<String>,
-    text: Option<String>,
-    ft_manager: State<'_, Arc<FileTransferManager>>,
-    room_manager: State<'_, RoomManager>,
-) -> Result<AttachFileResponse, String> {
-    let resp = ft_manager.attach_file(&file_path, chat_id.clone(), text).await?;
-
-    if let Some(ref target) = chat_id {
+async fn maybe_broadcast_room_attachment(
+    room_manager: &RoomManager,
+    chat_id: &Option<String>,
+    resp: &AttachFileResponse,
+) {
+    if let Some(target) = chat_id {
         if let Some(room) = room_manager.get_current_room().await {
             if &room.room_id == target {
                 let now = std::time::SystemTime::now()
@@ -405,11 +464,40 @@ pub async fn attach_file(
                     attachment_name: Some(resp.attachment_name.clone()),
                     timestamp: now,
                 };
-                let _ = room.broadcast_tx.send(gossip_msg);
+                if let Err(e) = room.broadcast_gossip(gossip_msg).await {
+                    eprintln!("[VoxP2P] [Room] Failed to broadcast attachment: {e}");
+                }
             }
         }
     }
+}
 
+#[tauri::command]
+pub async fn attach_file(
+    file_path: String,
+    chat_id: Option<String>,
+    text: Option<String>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+    room_manager: State<'_, RoomManager>,
+) -> Result<AttachFileResponse, String> {
+    let resp = ft_manager.attach_file(&file_path, chat_id.clone(), text).await?;
+    maybe_broadcast_room_attachment(&room_manager, &chat_id, &resp).await;
+    Ok(resp)
+}
+
+#[tauri::command]
+pub async fn attach_file_bytes(
+    filename: String,
+    bytes: Vec<u8>,
+    chat_id: Option<String>,
+    text: Option<String>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+    room_manager: State<'_, RoomManager>,
+) -> Result<AttachFileResponse, String> {
+    let resp = ft_manager
+        .attach_file_bytes(&filename, bytes, chat_id.clone(), text)
+        .await?;
+    maybe_broadcast_room_attachment(&room_manager, &chat_id, &resp).await;
     Ok(resp)
 }
 
@@ -417,12 +505,29 @@ pub async fn attach_file(
 pub async fn download_attachment(
     node_id: String,
     blob_hash: String,
-    save_path: String,
+    save_path: Option<String>,
+    filename: Option<String>,
     ft_manager: State<'_, Arc<FileTransferManager>>,
-) -> Result<(), String> {
+) -> Result<DownloadAttachmentResult, String> {
     ft_manager
-        .download_attachment(&node_id, &blob_hash, &save_path)
+        .download_attachment(
+            &node_id,
+            &blob_hash,
+            save_path.as_deref().unwrap_or(""),
+            filename.as_deref(),
+        )
         .await
+}
+
+#[tauri::command]
+pub async fn get_attachment_preview(
+    attachment_hash: String,
+    attachment_name: Option<String>,
+    ft_manager: State<'_, Arc<FileTransferManager>>,
+) -> Result<Option<String>, String> {
+    Ok(ft_manager
+        .get_attachment_preview(&attachment_hash, attachment_name.as_deref())
+        .await)
 }
 
 #[tauri::command]
@@ -469,6 +574,12 @@ pub async fn send_message(
         if room.room_id == chat_id {
             return room.send_room_chat(content, attachment_hash, attachment_name).await;
         }
+    }
+
+    if iroh::PublicKey::from_str(&chat_id).is_err() {
+        return Err(format!(
+            "Not connected to room '{chat_id}'. Join a room before sending messages."
+        ));
     }
 
     ft_manager

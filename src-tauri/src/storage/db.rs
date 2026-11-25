@@ -306,13 +306,36 @@ impl Database {
         Ok(())
     }
 
+    /// Inserts a message only if its `id` does not already exist (`INSERT OR IGNORE`),
+    /// preserving local state such as `is_edited` on duplicate deliveries.
+    /// Returns `true` if a new row was inserted, `false` if it already existed.
+    pub fn insert_message_if_absent(&self, message: &Message) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "INSERT OR IGNORE INTO messages (id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                message.id,
+                message.chat_id,
+                message.sender_id,
+                message.content,
+                message.attachment_hash,
+                message.attachment_name,
+                message.timestamp,
+                message.delivered,
+                message.is_edited
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
     pub fn get_messages_for_chat(&self, chat_id: &str, limit: usize) -> Result<Vec<Message>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, chat_id, sender_id, content, attachment_hash, attachment_name, timestamp, delivered, is_edited
              FROM messages
              WHERE chat_id = ?1
-             ORDER BY timestamp ASC
+             ORDER BY timestamp DESC, rowid DESC
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![chat_id, limit as i64], |row| {
@@ -333,6 +356,7 @@ impl Database {
         for msg in rows {
             messages.push(msg?);
         }
+        messages.reverse();
         Ok(messages)
     }
 
@@ -658,5 +682,65 @@ mod tests {
         assert_eq!(all.get("bypass_vpn"), Some(&"false".to_string()));
         assert_eq!(all.get("rnnoise_enabled"), Some(&"true".to_string()));
         assert_eq!(all.get("vad_threshold"), Some(&"0.45".to_string()));
+    }
+
+    #[test]
+    fn test_get_messages_for_chat_returns_latest_in_asc_order() {
+        let db = Database::new_in_memory().expect("db init failed");
+        for i in 0..75 {
+            let msg = Message {
+                id: format!("msg_{i}"),
+                chat_id: "peer_a".to_string(),
+                sender_id: "peer_a".to_string(),
+                content: format!("content_{i}"),
+                attachment_hash: None,
+                attachment_name: None,
+                timestamp: 1000 + i as i64,
+                delivered: 1,
+                is_edited: 0,
+            };
+            db.insert_message(&msg).unwrap();
+        }
+
+        let msgs = db.get_messages_for_chat("peer_a", 50).unwrap();
+        assert_eq!(msgs.len(), 50);
+        assert_eq!(msgs[0].id, "msg_25");
+        assert_eq!(msgs[0].timestamp, 1025);
+        assert_eq!(msgs[49].id, "msg_74");
+        assert_eq!(msgs[49].timestamp, 1074);
+        for w in msgs.windows(2) {
+            assert!(w[0].timestamp < w[1].timestamp);
+        }
+    }
+
+    #[test]
+    fn test_insert_message_if_absent_preserves_local_edits() {
+        let db = Database::new_in_memory().expect("db init failed");
+        let original = Message {
+            id: "dup_msg_1".to_string(),
+            chat_id: "peer_a".to_string(),
+            sender_id: "peer_a".to_string(),
+            content: "Original".to_string(),
+            attachment_hash: None,
+            attachment_name: None,
+            timestamp: 1000,
+            delivered: 1,
+            is_edited: 0,
+        };
+        assert!(db.insert_message_if_absent(&original).unwrap());
+
+        db.edit_message("dup_msg_1", "Edited locally").unwrap();
+
+        // Redelivery of the same message must be ignored and must not reset is_edited/content
+        let redelivered = Message {
+            content: "Original".to_string(),
+            is_edited: 0,
+            ..original
+        };
+        assert!(!db.insert_message_if_absent(&redelivered).unwrap());
+
+        let stored = db.get_message("dup_msg_1").unwrap().unwrap();
+        assert_eq!(stored.content, "Edited locally");
+        assert_eq!(stored.is_edited, 1);
     }
 }

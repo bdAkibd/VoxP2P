@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -372,6 +372,8 @@ pub struct RoomSession {
     pub secret_key: SecretKey,
     pub state: Arc<RwLock<RoomState>>,
     pub last_heartbeat_received: Arc<RwLock<Instant>>,
+    pub has_received_heartbeat: Arc<AtomicBool>,
+    pub joined_at: Instant,
     pub last_heartbeat_sent: Arc<RwLock<Instant>>,
     pub broadcast_tx: broadcast::Sender<RoomGossipMessage>,
     pub forwarded_datagram_tx: broadcast::Sender<(String, Vec<u8>)>,
@@ -463,6 +465,8 @@ impl RoomSession {
         let initial_state = RoomState::new(room_id.clone(), initial_host_id);
         let state = Arc::new(RwLock::new(initial_state));
         let last_heartbeat_received = Arc::new(RwLock::new(Instant::now()));
+        let has_received_heartbeat = Arc::new(AtomicBool::new(false));
+        let joined_at = Instant::now();
         let last_heartbeat_sent = Arc::new(RwLock::new(Instant::now()));
         let relay_targets = Arc::new(RwLock::new(HashSet::new()));
         let gossip_sender = Arc::new(Mutex::new(None));
@@ -477,6 +481,8 @@ impl RoomSession {
             secret_key,
             state: state.clone(),
             last_heartbeat_received: last_heartbeat_received.clone(),
+            has_received_heartbeat: has_received_heartbeat.clone(),
+            joined_at,
             last_heartbeat_sent: last_heartbeat_sent.clone(),
             broadcast_tx: broadcast_tx.clone(),
             forwarded_datagram_tx,
@@ -505,6 +511,8 @@ impl RoomSession {
                 local_node_id,
                 state,
                 last_heartbeat_received,
+                has_received_heartbeat,
+                joined_at,
                 last_heartbeat_sent,
                 broadcast_tx,
                 gossip_sender,
@@ -532,6 +540,8 @@ impl RoomSession {
         local_node_id: String,
         state: Arc<RwLock<RoomState>>,
         last_heartbeat_received: Arc<RwLock<Instant>>,
+        has_received_heartbeat: Arc<AtomicBool>,
+        joined_at: Instant,
         last_heartbeat_sent: Arc<RwLock<Instant>>,
         broadcast_tx: broadcast::Sender<RoomGossipMessage>,
         gossip_sender: Arc<Mutex<Option<GossipSender>>>,
@@ -585,51 +595,57 @@ impl RoomSession {
                             *last_heartbeat_received.write().await = now;
                         }
                     } else {
-                        // Non-host checks if current host has timed out (> 2000ms)
-                        let last_rx = *last_heartbeat_received.read().await;
-                        if now.duration_since(last_rx) >= Duration::from_millis(2000) {
-                            let mut st = state.write().await;
-                            let dead_host = st.host_node_id.clone();
+                        // Defer host-timeout migration until at least one Heartbeat is received
+                        // from the host or the initial 9s gossip-mesh join grace window elapses.
+                        let has_hb = has_received_heartbeat.load(Ordering::Acquire);
+                        let grace_elapsed = now.duration_since(joined_at) >= Duration::from_secs(9);
+                        if has_hb || grace_elapsed {
+                            // Non-host checks if current host has timed out (> 2000ms)
+                            let last_rx = *last_heartbeat_received.read().await;
+                            if now.duration_since(last_rx) >= Duration::from_millis(2000) {
+                                let mut st = state.write().await;
+                                let dead_host = st.host_node_id.clone();
 
-                            // Remove dead host from active peers
-                            st.remove_peer(&dead_host);
+                                // Remove dead host from active peers
+                                st.remove_peer(&dead_host);
 
-                            // Deterministically select first peer in sorted active list
-                            if let Some(new_host_id) = st.compute_next_host() {
-                                st.set_host(new_host_id.clone());
-                                *last_heartbeat_received.write().await = now;
-                                let st_clone = st.clone();
-                                drop(st);
+                                // Deterministically select first peer in sorted active list
+                                if let Some(new_host_id) = st.compute_next_host() {
+                                    st.set_host(new_host_id.clone());
+                                    *last_heartbeat_received.write().await = now;
+                                    let st_clone = st.clone();
+                                    drop(st);
 
-                                let payload = HostChangedPayload {
-                                    room_id: room_id.clone(),
-                                    old_host_id: dead_host,
-                                    new_host_id: new_host_id.clone(),
-                                };
-                                Self::emit_host_changed(&host_changed_cb, &payload);
-                                Self::emit_peers_updated(&peers_updated_cb, &st_clone);
-
-                                // If we were promoted to host, send immediate heartbeat
-                                if new_host_id == local_node_id {
-                                    let timestamp = SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis() as u64;
-                                    let updated_peers =
-                                        st_clone.peers.iter().map(|p| p.node_id.clone()).collect();
-                                    let heartbeat = RoomGossipMessage::Heartbeat {
-                                        host_id: local_node_id.clone(),
-                                        timestamp,
-                                        peer_list: updated_peers,
-                                        peers: st_clone.peers.clone(),
+                                    let payload = HostChangedPayload {
+                                        room_id: room_id.clone(),
+                                        old_host_id: dead_host,
+                                        new_host_id: new_host_id.clone(),
                                     };
-                                    let _ = broadcast_tx.send(heartbeat.clone());
-                                    if let Some(ref sender) = *gossip_sender.lock().await {
-                                        if let Ok(bytes) = heartbeat.to_bytes() {
-                                            let _ = sender.broadcast(Bytes::from(bytes)).await;
+                                    Self::emit_host_changed(&host_changed_cb, &payload);
+                                    Self::emit_peers_updated(&peers_updated_cb, &st_clone);
+
+                                    // If we were promoted to host, send immediate heartbeat
+                                    if new_host_id == local_node_id {
+                                        let timestamp = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as u64;
+                                        let updated_peers =
+                                            st_clone.peers.iter().map(|p| p.node_id.clone()).collect();
+                                        let heartbeat = RoomGossipMessage::Heartbeat {
+                                            host_id: local_node_id.clone(),
+                                            timestamp,
+                                            peer_list: updated_peers,
+                                            peers: st_clone.peers.clone(),
+                                        };
+                                        let _ = broadcast_tx.send(heartbeat.clone());
+                                        if let Some(ref sender) = *gossip_sender.lock().await {
+                                            if let Ok(bytes) = heartbeat.to_bytes() {
+                                                let _ = sender.broadcast(Bytes::from(bytes)).await;
+                                            }
                                         }
+                                        *last_heartbeat_sent.write().await = now;
                                     }
-                                    *last_heartbeat_sent.write().await = now;
                                 }
                             }
                         }
@@ -670,7 +686,30 @@ impl RoomSession {
                                     session.handle_gossip_message(room_msg).await.ok();
                                 }
                             }
-                            Some(Ok(Event::NeighborUp(_nid))) => {}
+                            Some(Ok(Event::NeighborUp(_nid))) => {
+                                let my_nickname = session.local_nickname.read().await.clone();
+                                let my_avatar = session.local_avatar_hash.read().await.clone();
+                                let (is_muted, is_deafened) = {
+                                    let st = session.state.read().await;
+                                    st.get_peer(&session.local_node_id)
+                                        .map(|p| (p.is_muted, p.is_deafened))
+                                        .unwrap_or((false, false))
+                                };
+                                let my_joined = RoomGossipMessage::PeerJoined {
+                                    node_id: session.local_node_id.clone(),
+                                    nickname: my_nickname,
+                                    avatar_hash: my_avatar,
+                                    join_timestamp: session.join_timestamp,
+                                };
+                                let _ = session.broadcast_gossip(my_joined).await;
+
+                                let my_state = RoomGossipMessage::PeerStateUpdate {
+                                    node_id: session.local_node_id.clone(),
+                                    is_muted,
+                                    is_deafened,
+                                };
+                                let _ = session.broadcast_gossip(my_state).await;
+                            }
                             Some(Ok(Event::NeighborDown(_nid))) => {}
                             Some(Err(e)) => {
                                 eprintln!("Gossip receiver error: {e}");
@@ -866,6 +905,7 @@ impl RoomSession {
                     let mut state = self.state.write().await;
                     if host_id == state.host_node_id {
                         *self.last_heartbeat_received.write().await = Instant::now();
+                        self.has_received_heartbeat.store(true, Ordering::Release);
                     }
                     for p in peers {
                         if p.node_id != self.local_node_id {
@@ -1007,7 +1047,12 @@ impl RoomSession {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        let id = format!("msg_{}_{}", self.local_node_id, now);
+        let id = format!(
+            "msg_{}_{}_{}",
+            self.local_node_id,
+            now,
+            crate::network::file_transfer::next_message_seq()
+        );
 
         let msg = Message {
             id: id.clone(),
@@ -1258,8 +1303,7 @@ impl RoomManager {
         db: Database,
         app_handle: Option<tauri::AppHandle>,
     ) -> Self {
-        let secret_key = SecretKey::generate();
-        let local_node_id = secret_key.public().to_string();
+        let (secret_key, local_node_id) = node_manager.get_identity_sync();
 
         let inner = Arc::new(RwLock::new(RoomManagerInner {
             current_room: None,
@@ -1269,35 +1313,16 @@ impl RoomManager {
             audio_manager: None,
         }));
 
-        let mgr = Self {
-            node_manager: Some(node_manager.clone()),
-            inner: inner.clone(),
+        Self {
+            node_manager: Some(node_manager),
+            inner,
             audio_connections: Arc::new(RwLock::new(HashMap::new())),
             sent_audio_packets: Arc::new(AtomicU64::new(0)),
             recv_audio_packets: Arc::new(AtomicU64::new(0)),
             last_audio_log: Arc::new(RwLock::new(Instant::now())),
             db,
             app_handle,
-        };
-
-        // Asynchronously load real identity from node_manager
-        let mgr_clone = mgr.clone();
-        let nm = node_manager.clone();
-        let spawn_fn = async move {
-            let key = nm.get_secret_key().await;
-            let nid = nm.get_node_id().await;
-            let mut w = mgr_clone.inner.write().await;
-            w.secret_key = key;
-            w.local_node_id = nid;
-        };
-
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(spawn_fn);
-        } else {
-            tauri::async_runtime::spawn(spawn_fn);
         }
-
-        mgr
     }
 
     pub fn new_standalone(
@@ -1464,6 +1489,9 @@ impl RoomManager {
 
         match connect_res {
             Ok(Ok(connection)) => {
+                if let Some(ref nm) = self.node_manager {
+                    nm.record_peer_connection(target_pk).await;
+                }
                 self.register_audio_connection(peer_node_id.to_string(), connection).await;
                 if let Some(room) = self.get_current_room().await {
                     room.set_peer_relay_fallback(peer_node_id, false).await;
@@ -2331,9 +2359,10 @@ mod tests {
                 is_deafened: false,
             });
 
-            // Set last_heartbeat_received to 2500ms ago to simulate timeout
+            // Set last_heartbeat_received to 2500ms ago to simulate timeout after receiving a heartbeat
             *session.last_heartbeat_received.write().await =
                 Instant::now() - Duration::from_millis(2500);
+            session.has_received_heartbeat.store(true, Ordering::Release);
 
             // Give background loop time to detect timeout and trigger migration
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -2512,6 +2541,63 @@ mod tests {
             assert!(st.peers.iter().any(|p| p.node_id == host_id && p.is_host));
 
             mgr.leave_room().await;
+        });
+    }
+
+    #[test]
+    fn test_guest_defers_host_migration_until_heartbeat_or_grace_window() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let db = Database::new_in_memory().unwrap();
+            let host_id = "connecting_host_node".to_string();
+            let peer1_sk = SecretKey::generate();
+            let peer1_id = peer1_sk.public().to_string();
+
+            let session = RoomSession::new(
+                "room_grace_window".to_string(),
+                peer1_id.clone(),
+                peer1_sk,
+                host_id.clone(),
+                db,
+                None,
+                None,
+            );
+
+            session.state.write().await.add_or_update_peer(PeerInfo {
+                node_id: host_id.clone(),
+                nickname: "Host".to_string(),
+                avatar_hash: None,
+                join_timestamp: 10,
+                is_host: true,
+                is_muted: false,
+                is_deafened: false,
+            });
+            session.state.write().await.add_or_update_peer(PeerInfo {
+                node_id: peer1_id.clone(),
+                nickname: "Guest".to_string(),
+                avatar_hash: None,
+                join_timestamp: 20,
+                is_host: false,
+                is_muted: false,
+                is_deafened: false,
+            });
+
+            // Even if last_heartbeat_received looks >2000ms old, has_received_heartbeat is false
+            // and we are still inside the 9s startup grace window, so host must NOT be migrated.
+            *session.last_heartbeat_received.write().await =
+                Instant::now() - Duration::from_millis(2500);
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+
+            let st = session.state.read().await;
+            assert_eq!(st.host_node_id, host_id);
+            assert!(st.get_peer(&host_id).is_some());
+            drop(st);
+
+            session.close().await;
         });
     }
 }

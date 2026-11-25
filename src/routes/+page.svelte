@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { UserProfile, Contact, RoomState, Message, DirectCallRingPayload } from "$lib/types";
+  import type { UserProfile, Contact, RoomState, Message, DirectCallRingPayload, NodeNetworkStatus } from "$lib/types";
   import { initTheme, type ThemeConfig } from "$lib/theme";
   import { api } from "$lib/api";
   import { t, initLocale } from "$lib/i18n";
@@ -14,6 +14,8 @@
   let profile = $state<UserProfile | null>(null);
   let contacts = $state<Contact[]>([]);
   let roomState = $state<RoomState | null>(null);
+  let networkStatus = $state<NodeNetworkStatus | null>(null);
+  let unreadCounts = $state<Record<string, number>>({});
   let activeChatId = $state<string>("lobby");
   let messages = $state<Message[]>([]);
   let audioLevels = $state<Record<string, number>>({});
@@ -106,7 +108,7 @@
     // 3. Fetch Contacts
     loadContacts();
 
-    // 4. Fetch Room State
+    // 4. Fetch Room State & Network Status
     api.getRoomState().then((r) => {
       roomState = r;
       if (r) {
@@ -114,12 +116,15 @@
       }
     }).catch(console.error);
 
+    api.getNetworkStatus().then((s) => {
+      networkStatus = s;
+    }).catch(console.error);
+
     // 5. Register Event Listeners
     let unlistenLevels: (() => void) | undefined;
     let unlistenHost: (() => void) | undefined;
     let unlistenPeers: (() => void) | undefined;
     let unlistenChat: (() => void) | undefined;
-    let unlistenChatReceived: (() => void) | undefined;
     let unlistenChatDelivered: (() => void) | undefined;
     let unlistenIncomingCall: (() => void) | undefined;
     let unlistenSyncImport: (() => void) | undefined;
@@ -129,6 +134,7 @@
     let unlistenChatDeleted: (() => void) | undefined;
     let unlistenMuteToggled: (() => void) | undefined;
     let unlistenRoomLeft: (() => void) | undefined;
+    let unlistenNodeStatus: (() => void) | undefined;
 
     api.onAudioLevels((levels) => {
       audioLevels = levels;
@@ -151,9 +157,9 @@
       handleIncomingMessage(msg);
     }).then((u) => (unlistenChat = u));
 
-    api.onChatMessageReceived((msg) => {
-      handleIncomingMessage(msg);
-    }).then((u) => (unlistenChatReceived = u));
+    api.onNodeStatusChanged((s) => {
+      networkStatus = s;
+    }).then((u) => (unlistenNodeStatus = u));
 
     api.onChatMessageDelivered((payload) => {
       handleMessageDelivered(payload.message_id);
@@ -211,7 +217,7 @@
       unlistenHost?.();
       unlistenPeers?.();
       unlistenChat?.();
-      unlistenChatReceived?.();
+      unlistenNodeStatus?.();
       unlistenChatDelivered?.();
       unlistenIncomingCall?.();
       unlistenSyncImport?.();
@@ -225,8 +231,13 @@
   });
 
   $effect(() => {
-    // Whenever activeChatId changes, fetch latest messages
+    // Whenever activeChatId changes, fetch latest messages and clear unread counter
     if (activeChatId) {
+      if (unreadCounts[activeChatId]) {
+        const next = { ...unreadCounts };
+        delete next[activeChatId];
+        unreadCounts = next;
+      }
       api.getMessages(activeChatId, 50).then((res) => {
         messages = res;
       }).catch(console.error);
@@ -250,6 +261,11 @@
       if (!messages.some((m) => m.id === msg.id)) {
         messages = [...messages, msg];
       }
+    } else if (msg.sender_id !== profile?.node_id) {
+      unreadCounts = {
+        ...unreadCounts,
+        [msg.chat_id]: (unreadCounts[msg.chat_id] ?? 0) + 1,
+      };
     }
   }
 
@@ -343,6 +359,7 @@
       }
     } catch (err) {
       console.error("Failed to send message:", err);
+      throw err;
     }
   }
 
@@ -364,6 +381,8 @@
         {profile}
         {contacts}
         {roomState}
+        {networkStatus}
+        {unreadCounts}
         bind:activeChatId
         bind:isMuted
         bind:isDeafened
@@ -642,7 +661,17 @@
             <div class="mobile-account-summary">
               <div class="account-summary-top">
                 <span class="account-badge">{t("mobile.myAccount")}</span>
-                <span class="online-tag">{t("mobile.connectedTag")}</span>
+                {#if !networkStatus || networkStatus.status === "Starting" || (networkStatus.status === "Running" && !networkStatus.relay_connected && !networkStatus.is_online && !networkStatus.last_error)}
+                  <span class="online-tag connecting">● {t("common.connecting")}</span>
+                {:else if networkStatus.status === "Error" || (networkStatus.last_error && !networkStatus.relay_connected && !networkStatus.is_online)}
+                  <span class="online-tag error" title={networkStatus.last_error || ""}>● {t("common.error")}</span>
+                {:else if networkStatus.relay_connected}
+                  <span class="online-tag">● {t("common.connected")} (Relay)</span>
+                {:else if networkStatus.is_online}
+                  <span class="online-tag">● {t("common.online")}</span>
+                {:else}
+                  <span class="online-tag error">● {t("common.offline")}</span>
+                {/if}
               </div>
               <div class="account-summary-profile">
                 <Avatar hash={profile?.avatar_hash} nickname={profile?.nickname} size={48} />
@@ -739,6 +768,8 @@
                 {profile}
                 {contacts}
                 {roomState}
+                {networkStatus}
+                {unreadCounts}
                 bind:activeChatId
                 bind:isMuted
                 bind:isDeafened
@@ -1419,6 +1450,14 @@
   .online-tag {
     color: var(--online-status-color);
     font-weight: 600;
+  }
+
+  .online-tag.connecting {
+    color: #f59e0b;
+  }
+
+  .online-tag.error {
+    color: var(--danger-color);
   }
 
   .account-nickname {

@@ -97,6 +97,11 @@ export interface AttachFileResponse {
   ticket: string;
 }
 
+export interface DownloadAttachmentResult {
+  saved_path: string;
+  data_url?: string | null;
+}
+
 export interface DeviceSyncTicket {
   ticket: string;
   blob_hash: string;
@@ -148,4 +153,20 @@ export interface SyncImportCompletedPayload {
   nickname: string;
   contacts_imported: number;
   messages_imported: number;
+}
+
+export interface RelayStatusInfo {
+  url: string;
+  is_connected: boolean;
+  last_error?: string | null;
+}
+
+export interface NodeNetworkStatus {
+  status: string;
+  is_online: boolean;
+  relay_connected: boolean;
+  home_relay_url?: string | null;
+  direct_addrs: string[];
+  relays: RelayStatusInfo[];
+  last_error?: string | null;
 }

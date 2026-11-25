@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { UserProfile, Contact, RoomState, ContextMenuItem } from "../types";
+  import type { UserProfile, Contact, RoomState, ContextMenuItem, NodeNetworkStatus } from "../types";
   import { api } from "../api";
   import { t } from "../i18n";
   import Avatar from "./Avatar.svelte";
@@ -9,6 +9,8 @@
     profile,
     contacts,
     roomState,
+    networkStatus = null,
+    unreadCounts = {},
     activeChatId = $bindable(),
     isMuted = $bindable(),
     isDeafened = $bindable(),
@@ -21,6 +23,8 @@
     profile: UserProfile | null;
     contacts: Contact[];
     roomState: RoomState | null;
+    networkStatus?: NodeNetworkStatus | null;
+    unreadCounts?: Record<string, number>;
     activeChatId: string;
     isMuted: boolean;
     isDeafened: boolean;
@@ -30,6 +34,30 @@
     onAddContact: (nodeId: string) => void;
     onDirectCall?: (nodeId: string) => void;
   } = $props();
+
+  let nodeStatusInfo = $derived.by(() => {
+    const s = networkStatus;
+    if (!s || s.status === "Starting") {
+      return { label: t("common.connecting"), tone: "connecting", title: "" };
+    }
+    if (s.status === "Error" || (s.last_error && !s.relay_connected && !s.is_online)) {
+      return { label: t("common.error"), tone: "error", title: s.last_error || "" };
+    }
+    if (s.relay_connected) {
+      return {
+        label: `${t("common.connected")} (Relay)`,
+        tone: "online",
+        title: s.home_relay_url || "",
+      };
+    }
+    if (s.is_online) {
+      return { label: t("common.online"), tone: "online", title: "" };
+    }
+    if (s.status === "Running") {
+      return { label: t("common.connecting"), tone: "connecting", title: "" };
+    }
+    return { label: t("common.offline"), tone: "error", title: s.last_error || "" };
+  });
 
   let targetRoomInput = $state("");
   let showAddContactModal = $state(false);
@@ -216,7 +244,10 @@
       <img src="/app-icon.png" alt="VoxP2P" class="brand-logo" />
       <div class="brand-text">
         <span class="brand-title">VoxP2P</span>
-        <span class="brand-sub">Serverless Mesh</span>
+        <span class="brand-sub node-status-line" title={nodeStatusInfo.title}>
+          <span class="status-dot {nodeStatusInfo.tone}"></span>
+          <span>{nodeStatusInfo.label}</span>
+        </span>
       </div>
     </div>
     <button class="icon-btn" title={t("sidebar.settingsTooltip")} onclick={onOpenSettings}>
@@ -247,6 +278,9 @@
             <span class="room-meta">{roomState.room_id.startsWith("call_") ? t("sidebar.privateCallMeta") : t("sidebar.peersConnected", { count: roomState.peers.length })}</span>
           </div>
         </div>
+        {#if (unreadCounts[roomState.room_id] ?? 0) > 0}
+          <span class="unread-badge">{unreadCounts[roomState.room_id] > 99 ? "99+" : unreadCounts[roomState.room_id]}</span>
+        {/if}
         <button
           class="leave-btn"
           title={t("sidebar.leaveRoomTooltip")}
@@ -315,6 +349,9 @@
               <span class="contact-name">{contact.nickname}</span>
               <span class="contact-id">{formatShortId(contact.node_id)}</span>
             </div>
+            {#if (unreadCounts[contact.node_id] ?? 0) > 0}
+              <span class="unread-badge">{unreadCounts[contact.node_id] > 99 ? "99+" : unreadCounts[contact.node_id]}</span>
+            {/if}
             <button
               class="quick-call-btn"
               title={t("sidebar.startCall")}
@@ -352,7 +389,7 @@
           size={38}
         />
       </div>
-      <span class="online-indicator"></span>
+      <span class="online-indicator {nodeStatusInfo.tone}" title={nodeStatusInfo.label}></span>
     </div>
 
     <div class="user-info">
@@ -769,6 +806,51 @@
     border-radius: 50%;
     background: var(--online-status-color);
     border: 2px solid var(--bg-secondary);
+  }
+
+  .online-indicator.connecting {
+    background: #f59e0b;
+  }
+
+  .online-indicator.error {
+    background: var(--danger-color);
+  }
+
+  .node-status-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--online-status-color);
+  }
+
+  .status-dot.connecting {
+    background: #f59e0b;
+  }
+
+  .status-dot.error {
+    background: var(--danger-color);
+  }
+
+  .unread-badge {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--accent-primary);
+    color: #ffffff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
   }
 
   .contact-info {

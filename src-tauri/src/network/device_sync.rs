@@ -250,7 +250,7 @@ impl SyncHostSession {
         };
 
         let avatar_bytes = if let Some(ref hash) = local_profile.avatar_hash {
-            let p = self.app_data_dir.join(format!("avatar_{}.bin", hash));
+            let p = crate::network::file_transfer::avatar_file_path(&self.app_data_dir, hash);
             if p.exists() {
                 std::fs::read(p).ok()
             } else {
@@ -500,7 +500,10 @@ impl DeviceSyncManager {
         if let (Some(hash), Some(bytes)) =
             (&bundle.profile.avatar_hash, &bundle.avatar_bytes)
         {
-            let p = self.app_data_dir.join(format!("avatar_{}.bin", hash));
+            let p = crate::network::file_transfer::avatar_file_path(&self.app_data_dir, hash);
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             let _ = std::fs::write(p, bytes);
         }
 

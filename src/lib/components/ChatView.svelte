@@ -21,17 +21,22 @@
     profile: UserProfile | null;
     contacts?: Contact[];
     messages: Message[];
-    onSendMessage: (text: string) => void;
+    onSendMessage: (text: string) => Promise<void> | void;
     onThemeApplied: (theme: ThemeConfig) => void;
     onJoinRoom?: (roomIdOrTicket: string) => void;
     onDirectCall?: (nodeId: string) => void;
   } = $props();
 
   let messageInput = $state("");
+  let sendError = $state<string | null>(null);
+  let isSending = $state(false);
   let messagesContainer = $state<HTMLDivElement | null>(null);
   let isDragging = $state(false);
   let transferProgressMap = $state<Record<string, TransferProgressPayload>>({});
   let downloadedHashes = $state<Record<string, boolean>>({});
+  let attachmentPreviews = $state<Record<string, string>>({});
+  let savedPaths = $state<Record<string, string>>({});
+  const previewRequested = new Set<string>();
 
   // Context Menu State
   let contextMenuState = $state<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
@@ -83,8 +88,9 @@
               const filename = filePath.split(/[/\\]/).pop() || filePath;
               try {
                 await api.attachFile(filePath, activeChatId, `Shared file: ${filename}`);
-              } catch (err) {
+              } catch (err: any) {
                 console.error("Failed to upload dropped file via native drag-drop:", err);
+                sendError = typeof err === "string" ? err : err?.message || String(err);
               }
             }
           }
@@ -103,6 +109,13 @@
   });
 
   $effect(() => {
+    // Clear previous send error when switching chats
+    if (activeChatId) {
+      sendError = null;
+    }
+  });
+
+  $effect(() => {
     // Scroll to bottom when new messages arrive
     if (messages.length && messagesContainer) {
       setTimeout(() => {
@@ -113,10 +126,19 @@
     }
   });
 
-  function handleSend() {
-    if (!messageInput.trim()) return;
-    onSendMessage(messageInput.trim());
-    messageInput = "";
+  async function handleSend() {
+    const text = messageInput.trim();
+    if (!text || isSending) return;
+    sendError = null;
+    isSending = true;
+    try {
+      await onSendMessage(text);
+      messageInput = "";
+    } catch (err: any) {
+      sendError = typeof err === "string" ? err : err?.message || String(err);
+    } finally {
+      isSending = false;
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -416,13 +438,79 @@
     );
   }
 
+  $effect(() => {
+    for (const msg of messages) {
+      const hash = msg.attachment_hash;
+      if (!hash || !isImageAttachment(msg.attachment_name)) continue;
+      if (attachmentPreviews[hash] || previewRequested.has(hash)) continue;
+      previewRequested.add(hash);
+      api
+        .getAttachmentPreview(hash, msg.attachment_name)
+        .then((url) => {
+          if (url) {
+            attachmentPreviews[hash] = url;
+          }
+        })
+        .catch(() => {});
+    }
+  });
+
+  async function attachSelectedFile(file: File) {
+    const filePath = (file as any).path as string | undefined;
+    try {
+      sendError = null;
+      let resp;
+      if (filePath && filePath.trim().length > 0) {
+        resp = await api.attachFile(filePath, activeChatId, `Shared file: ${file.name}`);
+      } else {
+        const buf = await file.arrayBuffer();
+        resp = await api.attachFileBytes(
+          file.name,
+          new Uint8Array(buf),
+          activeChatId,
+          `Shared file: ${file.name}`
+        );
+      }
+      if (resp?.attachment_hash && isImageAttachment(resp.attachment_name)) {
+        const preview = await api.getAttachmentPreview(
+          resp.attachment_hash,
+          resp.attachment_name
+        );
+        if (preview) {
+          attachmentPreviews[resp.attachment_hash] = preview;
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to attach file:", err);
+      sendError = typeof err === "string" ? err : err?.message || String(err);
+    }
+  }
+
   async function handleDownload(msg: Message) {
     if (!msg.attachment_hash) return;
-    const savePath = `./downloads/${msg.attachment_name || msg.attachment_hash}`;
     try {
-      await api.downloadAttachment(msg.sender_id, msg.attachment_hash, savePath);
-    } catch (err) {
+      sendError = null;
+      const res = await api.downloadAttachment(
+        msg.sender_id,
+        msg.attachment_hash,
+        null,
+        msg.attachment_name
+      );
+      downloadedHashes[msg.attachment_hash] = true;
+      if (res.saved_path) {
+        savedPaths[msg.attachment_hash] = res.saved_path;
+      }
+      if (res.data_url) {
+        attachmentPreviews[msg.attachment_hash] = res.data_url;
+      } else if (isImageAttachment(msg.attachment_name)) {
+        const url = await api.getAttachmentPreview(msg.attachment_hash, msg.attachment_name);
+        if (url) {
+          attachmentPreviews[msg.attachment_hash] = url;
+        }
+      }
+    } catch (err: any) {
       console.error("Failed to download attachment:", err);
+      sendError = typeof err === "string" ? err : err?.message || String(err);
     }
   }
 
@@ -439,14 +527,7 @@
     e.preventDefault();
     isDragging = false;
     if (e.dataTransfer?.files?.length) {
-      const file = e.dataTransfer.files[0];
-      // In Tauri, web File objects might have a .path property or we can attach via file path
-      const filePath = (file as any).path || file.name;
-      try {
-        await api.attachFile(filePath, activeChatId, `Shared file: ${file.name}`);
-      } catch (err) {
-        console.error("Failed to upload dropped file:", err);
-      }
+      await attachSelectedFile(e.dataTransfer.files[0]);
     }
   }
 
@@ -455,13 +536,7 @@
     input.type = "file";
     input.onchange = async () => {
       if (input.files?.length) {
-        const file = input.files[0];
-        const filePath = (file as any).path || file.name;
-        try {
-          await api.attachFile(filePath, activeChatId, `Shared file: ${file.name}`);
-        } catch (err) {
-          console.error("Failed to attach file:", err);
-        }
+        await attachSelectedFile(input.files[0]);
       }
     };
     input.click();
@@ -635,13 +710,12 @@
             <!-- Attachment Card / Image Preview -->
             {#if msg.attachment_hash}
               <div class="attachment-box">
-                {#if isImageAttachment(msg.attachment_name)}
+                {#if isImageAttachment(msg.attachment_name) && attachmentPreviews[msg.attachment_hash]}
                   <div class="image-preview-card">
                     <img
-                      src={`./downloads/${msg.attachment_name}`}
+                      src={attachmentPreviews[msg.attachment_hash]}
                       alt={msg.attachment_name || "Attachment"}
                       onerror={(e) => {
-                        // If local preview not yet downloaded, show placeholder card
                         (e.target as HTMLElement).style.display = "none";
                       }}
                     />
@@ -666,6 +740,7 @@
                     <button
                       class="download-btn"
                       class:downloaded={downloadedHashes[msg.attachment_hash]}
+                      title={savedPaths[msg.attachment_hash] || undefined}
                       onclick={() => handleDownload(msg)}
                     >
                       {downloadedHashes[msg.attachment_hash] ? t("chat.downloaded") : t("chat.download")}
@@ -680,6 +755,20 @@
     {/if}
   </div>
 
+  {#if sendError}
+    <div class="send-error-banner" role="alert">
+      <span class="send-error-text">⚠️ {sendError}</span>
+      <button
+        type="button"
+        class="send-error-dismiss"
+        onclick={() => (sendError = null)}
+        aria-label={t("common.dismiss")}
+      >
+        &times;
+      </button>
+    </div>
+  {/if}
+
   <!-- Input Bar -->
   <div class="chat-input-area">
     <button class="attach-btn" title={t("chat.attachFileTooltip")} onclick={handleAttachButtonClick}>
@@ -690,11 +779,12 @@
       class="chat-textarea"
       placeholder={t("chat.messagePlaceholder")}
       bind:value={messageInput}
+      oninput={() => { if (sendError) sendError = null; }}
       onkeydown={handleKeydown}
       oncontextmenu={handleInputContextMenu}
       rows="1"
     ></textarea>
-    <button class="send-btn" title={t("chat.sendButton")} onclick={handleSend} disabled={!messageInput.trim()}>
+    <button class="send-btn" title={t("chat.sendButton")} onclick={handleSend} disabled={!messageInput.trim() || isSending}>
       ➤
     </button>
   </div>
@@ -775,6 +865,41 @@
 
   .chat-view-container.dragging {
     outline: 2px dashed var(--accent-primary);
+  }
+
+  .send-error-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 14px;
+    margin: 0 12px 6px;
+    border-radius: var(--border-radius);
+    background: rgba(239, 68, 68, 0.14);
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    color: var(--danger-color, #ef4444);
+    font-size: 0.84rem;
+  }
+
+  .send-error-text {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+  }
+
+  .send-error-dismiss {
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-size: 1.15rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .send-error-dismiss:hover {
+    background: rgba(239, 68, 68, 0.2);
   }
 
   .drag-overlay {

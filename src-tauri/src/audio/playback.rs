@@ -28,27 +28,34 @@ impl Default for AudioPlaybackConfig {
 
 /// Lists all available playback (speaker/headphone) output devices on the system.
 pub fn list_output_devices() -> Vec<AudioDeviceInfo> {
-    let host = cpal::default_host();
-    let default_name = host
-        .default_output_device()
-        .and_then(|d| d.description().map(|desc| desc.name().to_string()).ok());
-    let mut result = Vec::new();
+    let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let host = cpal::default_host();
+        let default_name = host
+            .default_output_device()
+            .and_then(|d| d.description().map(|desc| desc.name().to_string()).ok());
+        let mut devices_list = Vec::new();
 
-    if let Ok(devices) = host.output_devices() {
-        for (idx, dev) in devices.enumerate() {
-            let name = dev
-                .description()
-                .map(|desc| desc.name().to_string())
-                .unwrap_or_else(|_| format!("Speaker {}", idx + 1));
-            let is_default = default_name.as_deref() == Some(&name)
-                || (default_name.is_none() && idx == 0);
-            result.push(AudioDeviceInfo {
-                id: name.clone(),
-                name,
-                is_default,
-            });
+        if let Ok(devices) = host.output_devices() {
+            for (idx, dev) in devices.enumerate() {
+                let name = dev
+                    .description()
+                    .map(|desc| desc.name().to_string())
+                    .unwrap_or_else(|_| format!("Speaker {}", idx + 1));
+                let is_default = default_name.as_deref() == Some(&name)
+                    || (default_name.is_none() && idx == 0);
+                devices_list.push(AudioDeviceInfo {
+                    id: name.clone(),
+                    name,
+                    is_default,
+                });
+            }
         }
-    }
+        devices_list
+    }))
+    .unwrap_or_else(|_| {
+        eprintln!("[VoxP2P] Panic caught while enumerating output devices");
+        Vec::new()
+    });
 
     if result.is_empty() {
         result.push(AudioDeviceInfo {
@@ -172,7 +179,8 @@ impl AudioPlaybackPipeline {
 
     /// Pulls mixed PCM samples from AudioMixer and maps them to output channels.
     fn render_samples(data: &mut [f32], channels: usize, mixer: &Arc<AudioMixer>) {
-        if data.is_empty() {
+        if channels == 0 || data.len() < channels {
+            data.fill(0.0);
             return;
         }
 

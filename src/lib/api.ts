@@ -9,6 +9,7 @@ import type {
   TransferProgressPayload,
   HostChangedPayload,
   AttachFileResponse,
+  DownloadAttachmentResult,
   DeviceSyncTicket,
   ImportSyncResult,
   DirectCallRingPayload,
@@ -20,6 +21,7 @@ import type {
   SyncImportCompletedPayload,
   MessageEditedPayload,
   MessageDeletedPayload,
+  NodeNetworkStatus,
 } from "./types";
 
 export const api = {
@@ -49,6 +51,10 @@ export const api = {
 
   async getNodeStatus(): Promise<any> {
     return await invoke("get_node_status");
+  },
+
+  async getNetworkStatus(): Promise<NodeNetworkStatus> {
+    return await invoke<NodeNetworkStatus>("get_network_status");
   },
 
   async getContacts(): Promise<Contact[]> {
@@ -158,15 +164,41 @@ export const api = {
     });
   },
 
+  async attachFileBytes(
+    filename: string,
+    bytes: Uint8Array | number[],
+    chatId?: string | null,
+    text?: string | null
+  ): Promise<AttachFileResponse> {
+    return await invoke<AttachFileResponse>("attach_file_bytes", {
+      filename,
+      bytes: Array.from(bytes),
+      chatId: chatId ?? null,
+      text: text ?? null,
+    });
+  },
+
   async downloadAttachment(
     nodeId: string,
     blobHash: string,
-    savePath: string
-  ): Promise<void> {
-    return await invoke("download_attachment", {
+    savePath?: string | null,
+    filename?: string | null
+  ): Promise<DownloadAttachmentResult> {
+    return await invoke<DownloadAttachmentResult>("download_attachment", {
       nodeId,
       blobHash,
-      savePath,
+      savePath: savePath ?? null,
+      filename: filename ?? null,
+    });
+  },
+
+  async getAttachmentPreview(
+    attachmentHash: string,
+    attachmentName?: string | null
+  ): Promise<string | null> {
+    return await invoke<string | null>("get_attachment_preview", {
+      attachmentHash,
+      attachmentName: attachmentName ?? null,
     });
   },
 
@@ -253,17 +285,33 @@ export const api = {
     return await invoke("stop_call_foreground_service");
   },
 
+  async ensureAudioStarted(): Promise<void> {
+    return await invoke("ensure_audio_started");
+  },
+
   async requestMicPermission(): Promise<boolean> {
+    const isAndroid =
+      typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
     try {
-      if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach((t) => t.stop());
-        return true;
+      // On Android, request native RECORD_AUDIO via Rust/JNI and restart Oboe/cpal
+      // streams directly so WebView getUserMedia never captures the microphone.
+      return await invoke<boolean>("request_mic_permission");
+    } catch (invokeErr) {
+      if (isAndroid) {
+        console.warn("Native Android microphone permission request failed:", invokeErr);
+        return false;
       }
-      return true;
-    } catch (err) {
-      console.warn("Microphone permission denied:", err);
-      return false;
+      try {
+        if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach((t) => t.stop());
+          return true;
+        }
+        return true;
+      } catch (err) {
+        console.warn("Microphone permission denied:", err);
+        return false;
+      }
     }
   },
 
@@ -315,8 +363,8 @@ export const api = {
     });
   },
 
-  onChatMessageReceived(callback: (msg: Message) => void): Promise<UnlistenFn> {
-    return listen<Message>("chat://message-received", (event) => {
+  onNodeStatusChanged(callback: (status: NodeNetworkStatus) => void): Promise<UnlistenFn> {
+    return listen<NodeNetworkStatus>("node://status-changed", (event) => {
       callback(event.payload);
     });
   },

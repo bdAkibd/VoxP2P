@@ -51,27 +51,34 @@ fn atomic_to_f32(atomic: u32) -> f32 {
 
 /// Lists all available microphone input devices on the system.
 pub fn list_input_devices() -> Vec<AudioDeviceInfo> {
-    let host = cpal::default_host();
-    let default_name = host
-        .default_input_device()
-        .and_then(|d| d.description().map(|desc| desc.name().to_string()).ok());
-    let mut result = Vec::new();
+    let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let host = cpal::default_host();
+        let default_name = host
+            .default_input_device()
+            .and_then(|d| d.description().map(|desc| desc.name().to_string()).ok());
+        let mut devices_list = Vec::new();
 
-    if let Ok(devices) = host.input_devices() {
-        for (idx, dev) in devices.enumerate() {
-            let name = dev
-                .description()
-                .map(|desc| desc.name().to_string())
-                .unwrap_or_else(|_| format!("Microphone {}", idx + 1));
-            let is_default = default_name.as_deref() == Some(&name)
-                || (default_name.is_none() && idx == 0);
-            result.push(AudioDeviceInfo {
-                id: name.clone(),
-                name,
-                is_default,
-            });
+        if let Ok(devices) = host.input_devices() {
+            for (idx, dev) in devices.enumerate() {
+                let name = dev
+                    .description()
+                    .map(|desc| desc.name().to_string())
+                    .unwrap_or_else(|_| format!("Microphone {}", idx + 1));
+                let is_default = default_name.as_deref() == Some(&name)
+                    || (default_name.is_none() && idx == 0);
+                devices_list.push(AudioDeviceInfo {
+                    id: name.clone(),
+                    name,
+                    is_default,
+                });
+            }
         }
-    }
+        devices_list
+    }))
+    .unwrap_or_else(|_| {
+        eprintln!("[VoxP2P] Panic caught while enumerating input devices");
+        Vec::new()
+    });
 
     if result.is_empty() {
         result.push(AudioDeviceInfo {
@@ -95,7 +102,7 @@ pub struct AudioCapturePipeline {
     packet_seq: Arc<AtomicU64>,
     hangover_frames: Arc<AtomicU32>,
     denoise_state: Arc<Mutex<Box<DenoiseState<'static>>>>,
-    encoder: Arc<Mutex<AudioEncoder>>,
+    encoder: Arc<Mutex<Option<AudioEncoder>>>,
     packet_sender: Arc<RwLock<Option<AudioPacketSender>>>,
     loopback_sender: Arc<RwLock<Option<AudioLoopbackSender>>>,
     local_node_id: Arc<RwLock<String>>,
@@ -107,7 +114,13 @@ pub struct AudioCapturePipeline {
 impl AudioCapturePipeline {
     pub fn new(config: AudioCaptureConfig) -> Self {
         let denoise_state = DenoiseState::new();
-        let encoder = AudioEncoder::new().expect("Failed to initialize AudioEncoder");
+        let encoder = match AudioEncoder::new() {
+            Ok(enc) => Some(enc),
+            Err(e) => {
+                eprintln!("[VoxP2P] Failed to initialize AudioEncoder: {e}");
+                None
+            }
+        };
 
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -285,10 +298,13 @@ impl AudioCapturePipeline {
         }
 
         // 5. Encode via Opus
-        let mut encoder = self
+        let mut encoder_guard = self
             .encoder
             .lock()
             .map_err(|e| format!("Encoder lock poisoned: {e}"))?;
+        let encoder = encoder_guard
+            .as_mut()
+            .ok_or_else(|| "AudioEncoder is not initialized".to_string())?;
         let opus_data = encoder.encode(&denoised_frame)?;
         let seq = self.packet_seq.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -399,7 +415,7 @@ impl AudioCapturePipeline {
         fifo: &Arc<Mutex<Vec<f32>>>,
         dsp: &DspHandles,
     ) {
-        if data.is_empty() {
+        if channels == 0 || data.len() < channels {
             return;
         }
 
@@ -408,6 +424,10 @@ impl AudioCapturePipeline {
         for chunk in data.chunks_exact(channels) {
             let sum: f32 = chunk.iter().sum();
             mono_data.push(sum / channels as f32);
+        }
+
+        if mono_data.is_empty() {
+            return;
         }
 
         // Resample to 48kHz if required
@@ -480,7 +500,7 @@ struct DspHandles {
     packet_seq: Arc<AtomicU64>,
     hangover_frames: Arc<AtomicU32>,
     denoise_state: Arc<Mutex<Box<DenoiseState<'static>>>>,
-    encoder: Arc<Mutex<AudioEncoder>>,
+    encoder: Arc<Mutex<Option<AudioEncoder>>>,
     packet_sender: Arc<RwLock<Option<AudioPacketSender>>>,
     loopback_sender: Arc<RwLock<Option<AudioLoopbackSender>>>,
 }
@@ -560,9 +580,13 @@ impl DspHandles {
             return Ok(());
         }
 
-        let mut encoder = match self.encoder.lock() {
+        let mut encoder_guard = match self.encoder.lock() {
             Ok(e) => e,
             Err(_) => return Ok(()),
+        };
+        let encoder = match encoder_guard.as_mut() {
+            Some(enc) => enc,
+            None => return Ok(()),
         };
         let opus_data = encoder.encode(&denoised_frame)?;
         let seq = self.packet_seq.fetch_add(1, Ordering::SeqCst) + 1;

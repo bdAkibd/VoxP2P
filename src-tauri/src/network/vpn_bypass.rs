@@ -1,3 +1,10 @@
+//! Physical interface detection and UDP socket binding helpers.
+//!
+//! Note: `iroh 1.4.1` manages its internal `IpTransport` (`netwatch::UdpSocket`) and does not
+//! expose a stable public API to inject a pre-bound `std::net::UdpSocket` or `socket2::Socket`
+//! (`CustomTransport` is behind `unstable-custom-transports` and only handles `CustomAddr`).
+//! These helpers are therefore not wired into `iroh`'s runtime UDP socket.
+
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use socket2::{Domain, Protocol, Socket, Type};
 
